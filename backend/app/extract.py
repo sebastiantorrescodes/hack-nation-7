@@ -1,7 +1,7 @@
 """Turn a snapshot of the app's page (text the extension scraped from every frame) into a record,
 using the workflow's own fields."""
 
-from .llm import CLAUDE_FAST_MODEL, fields_doc, structured
+from .llm import fields_doc, structured
 from .models import RecordField, Workflow
 
 _TYPES = {
@@ -36,4 +36,4 @@ async def extract_record(wf: Workflow, page: str, image_base64: str | None = Non
     content: list[dict] = [{"type": "text", "text": page[:60000]}]
     if image_base64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}})
-    return await structured(model=CLAUDE_FAST_MODEL, effort="low", max_tokens=4000, system=system, content=content, schema=_schema(wf.fields))
+    return await structured(effort="low", max_tokens=4000, system=system, content=content, schema=_schema(wf.fields))

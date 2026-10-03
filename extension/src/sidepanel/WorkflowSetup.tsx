@@ -5,7 +5,7 @@ import { RecordForm, RecordView } from "./RecordForm";
 
 const TYPES: FieldType[] = ["string", "number", "boolean", "list"];
 
-/** The workflow's record fields: proposed by Claude from the first recording, correctable by the expert. */
+/** The workflow's record fields: proposed by the model from the first recording, correctable by the expert. */
 export function FieldsEditor({ workflow, onSaved }: { workflow: Workflow; onSaved: () => void }) {
   const [draft, setDraft] = useState<RecordField[] | null>(null);
   const [busy, setBusy] = useState(false);

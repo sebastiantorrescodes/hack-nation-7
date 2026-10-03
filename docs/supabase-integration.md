@@ -76,8 +76,8 @@ skills without a deliberate draft representation.
    approval. Group related writes atomically where practical to avoid partially
    saved skills/evidence.
 6. **Replace the old combined frame reasoning at integration time.** Sebastian's
-   capture route still asks Claude to analyze screenshots and choose questions in
-   one call. Step 6 should instead normalize DOM events, use Qwen only when needed,
+   capture route still asks one model (now Qwen through the shared OpenRouter
+   adapter) to analyze screenshots and choose questions in one call. Step 6 should instead normalize DOM events, use Qwen only when needed,
    call our apprentice for reasoning, and let ElevenLabs deliver the chosen speech.
 
 ## Validation needed after integration

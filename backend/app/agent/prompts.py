@@ -40,10 +40,10 @@ def decision_content(event: ObservedEvent, state: WorkMapState, context: Capture
 
 
 def decision_schema() -> dict:
-    """Send Claude-supported schema constraints; keep full Pydantic validation locally."""
+    """Send portable schema constraints; keep full Pydantic validation locally."""
     schema = AgentDecision.model_json_schema()
-    # The existing raw structured-output adapter does not use SDK schema helpers.
-    # String length constraints are unsupported by Claude's output grammar.
+    # The raw structured-output adapter does not use SDK schema helpers.
+    # String length constraints are not reliably supported by providers' output grammars.
     for definition in [schema, *schema.get("$defs", {}).values()]:
         for field in definition.get("properties", {}).values():
             minimum = field.pop("minLength", None)

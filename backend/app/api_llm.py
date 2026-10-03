@@ -1,4 +1,4 @@
-"""Free-only OpenRouter reasoning for the staged apprentice agent."""
+"""Free-only OpenRouter calls. Every call returns JSON constrained by a schema (structured outputs)."""
 
 import json
 import os
@@ -16,10 +16,22 @@ class ReasoningAPIError(RuntimeError):
     """Report configuration or provider failure without logging private content."""
 
 
-async def structured(*, system: str, content: str, schema: dict,
+def _part(block: dict) -> dict:
+    """Convert one content block to OpenRouter's (OpenAI-style) format."""
+    if block.get("type") == "image" and block.get("source", {}).get("type") == "base64":
+        src = block["source"]
+        return {"type": "image_url", "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}}
+    return block
+
+
+def _content(content: str | list[dict]) -> str | list[dict]:
+    return content if isinstance(content, str) else [_part(b) for b in content]
+
+
+async def structured(*, system: str, content: str | list[dict], schema: dict,
                      max_tokens: int = 3000, effort: str = "low",
                      transport: httpx.AsyncBaseTransport | None = None) -> dict:
-    """Request schema-shaped JSON; the orchestrator validates it before dispatch."""
+    """Request schema-shaped JSON. `content` is a string or a list of text/image blocks."""
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip()
@@ -30,20 +42,21 @@ async def structured(*, system: str, content: str, schema: dict,
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": content}],
+                     {"role": "user", "content": _content(content)}],
         "max_tokens": max_tokens,
+        "reasoning": {"effort": effort},
         "response_format": {"type": "json_schema", "json_schema": {
-            "name": "agent_decision", "strict": True, "schema": schema}},
+            "name": "result", "strict": True, "schema": schema}},
         "provider": {"require_parameters": True,
                      "max_price": {"prompt": 0, "completion": 0, "request": 0, "image": 0}},
     }
-    # Keep the caller-compatible effort argument without assuming every model supports it.
     try:
-        async with httpx.AsyncClient(transport=transport, timeout=60) as client:
+        # Work Map builds send a whole session at high effort, so allow long responses.
+        async with httpx.AsyncClient(transport=transport, timeout=180) as client:
             response = await client.post(ENDPOINT, json=payload,
                 headers={"Authorization": f"Bearer {key}"})
     except httpx.RequestError:
-        raise ReasoningAPIError("OpenRouter connection failed; no agent action was executed.") from None
+        raise ReasoningAPIError("OpenRouter connection failed; nothing was executed.") from None
     if response.status_code != 200:
         guidance = {401: "Check your OpenRouter API key.",
                     402: "Free capacity or account access is unavailable; do not add paid credits.",
@@ -60,5 +73,5 @@ async def structured(*, system: str, content: str, schema: dict,
         if not isinstance(result, dict):
             raise ValueError("Expected an object")
     except (ValueError, KeyError, IndexError, TypeError):
-        raise ReasoningAPIError("OpenRouter returned an incomplete or invalid JSON decision.") from None
+        raise ReasoningAPIError("OpenRouter returned an incomplete or invalid JSON response.") from None
     return result

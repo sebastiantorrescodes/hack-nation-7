@@ -46,6 +46,21 @@ class APITests(unittest.IsolatedAsyncioTestCase):
                 "message": {"content": json.dumps(WAIT)}}]})
         self.assertEqual(await self.call(handler), WAIT)
 
+    async def test_image_blocks_and_effort_use_openrouter_format(self):
+        content = [{"type": "text", "text": "Page snapshot"},
+                   {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}]
+        def handler(request):
+            payload = json.loads(request.content)
+            self.assertEqual(payload["messages"][1]["content"], [
+                {"type": "text", "text": "Page snapshot"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}])
+            self.assertEqual(payload["reasoning"], {"effort": "high"})
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+                "message": {"content": json.dumps(WAIT)}}]})
+        result = await api_llm.structured(system="Instructions", content=content, schema={"type": "object"},
+            effort="high", transport=httpx.MockTransport(handler))
+        self.assertEqual(result, WAIT)
+
     async def test_missing_key_and_paid_model_fail_before_network(self):
         for values in [{"OPENROUTER_API_KEY": ""}, {"OPENROUTER_MODEL": "qwen/paid"}]:
             with patch.dict("os.environ", values), self.assertRaises(api_llm.ReasoningAPIError):

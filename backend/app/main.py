@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from . import store
 from .config import FRONTEND_ORIGIN
-from .llm import LLMRefusal
+from .llm import ReasoningAPIError
 from .routes import capture, tutor, voice, workflows, workmaps
 
 
@@ -28,9 +28,9 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(LLMRefusal)
-async def refusal_handler(_: Request, exc: LLMRefusal):
-    return JSONResponse(status_code=422, content={"detail": str(exc)})
+@app.exception_handler(ReasoningAPIError)
+async def llm_error_handler(_: Request, exc: ReasoningAPIError):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
 app.include_router(voice.router)

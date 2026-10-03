@@ -171,7 +171,7 @@ class ToolPolicyTests(unittest.TestCase):
                            CaptureContext(expert_paused=True))
         self.assertEqual(state.phase, "capture")
 
-    def test_claude_schema_omits_unsupported_lengths_but_local_validation_keeps_them(self):
+    def test_api_schema_omits_unsupported_lengths_but_local_validation_keeps_them(self):
         """Keep API schema compatibility without weakening returned-payload validation."""
         schema = json.dumps(decision_schema())
         self.assertNotIn('"minLength"', schema)

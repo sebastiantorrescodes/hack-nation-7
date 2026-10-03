@@ -1,4 +1,4 @@
-"""Standalone Qwen + ElevenLabs demo, independent of legacy Claude capture."""
+"""Standalone Qwen + ElevenLabs demo of the staged apprentice, independent of the main capture routes."""
 
 import asyncio
 from pathlib import Path
