@@ -40,14 +40,15 @@ export default function Trainee({ active }: { active: boolean }) {
       {selected ? (
         <>
           <div className="row">
-            <button onClick={() => setSelected(null)} disabled={inSession} title={inSession ? "Finish this claim first" : undefined}>
+            <button onClick={() => setSelected(null)} disabled={inSession} title={inSession ? "Finish this record first" : undefined}>
               ← Workflows
             </button>
           </div>
           <div>
             <h3 className="title">{selected.name}</h3>
             <p className="muted">
-              {selected.app} · {selected.approved_skills} skills taught by experts
+              {selected.app ? `${selected.app} · ` : ""}
+              {selected.approved_skills} skills taught by experts
             </p>
           </div>
           <Tutor workflow={selected} learner={learner} onSessionChange={setInSession} />
@@ -63,7 +64,8 @@ export default function Trainee({ active }: { active: boolean }) {
               <button key={w.id} className="card link" onClick={() => setSelected(w)} disabled={!learner}>
                 <h3>{w.name}</h3>
                 <span className="muted">
-                  {w.app} · {w.approved_skills} skills · {learner ? `${mastered} mastered` : "not started"}
+                  {w.app ? `${w.app} · ` : ""}
+                  {w.approved_skills} skills · {learner ? `${mastered} mastered` : "not started"}
                 </span>
                 {learner && (
                   <div className="progress" aria-label={`${mastered} of ${w.approved_skills} mastered`}>

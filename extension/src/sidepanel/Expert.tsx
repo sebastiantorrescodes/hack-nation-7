@@ -3,13 +3,15 @@ import { api, type Skill, type SkillStatus, type Workflow, type WorkMap } from "
 import { useStored } from "../lib/useStored";
 import Capture from "./Capture";
 import SkillCard from "./SkillCard";
+import { CasesEditor, FieldsEditor } from "./WorkflowSetup";
 
 export default function Expert({ active }: { active: boolean }) {
   const [name, setName] = useStored("expertName");
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
-  const [newApp, setNewApp] = useState("OpenEMR");
+  const [newApp, setNewApp] = useState("");
+  const [newDescription, setNewDescription] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
@@ -26,10 +28,12 @@ export default function Expert({ active }: { active: boolean }) {
     setCreating(true);
     setError("");
     try {
-      const wf = await api<Workflow>("/api/workflows", { body: { name: newName, app: newApp } });
+      const wf = await api<Workflow>("/api/workflows", { body: { name: newName, app: newApp, description: newDescription } });
       setWorkflows((prev) => [...prev, wf]);
       setSelectedId(wf.id);
       setNewName("");
+      setNewApp("");
+      setNewDescription("");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -57,7 +61,8 @@ export default function Expert({ active }: { active: boolean }) {
             <button key={w.id} className="card link" onClick={() => setSelectedId(w.id)}>
               <h3>{w.name}</h3>
               <span className="muted">
-                {w.app} · {w.approved_skills} published · {w.draft_skills} to review · {w.sessions} recorded{" "}
+                {w.app ? `${w.app} · ` : ""}
+                {w.approved_skills} published · {w.draft_skills} to review · {w.sessions} recorded{" "}
                 {w.sessions === 1 ? "session" : "sessions"}
               </span>
             </button>
@@ -67,11 +72,20 @@ export default function Expert({ active }: { active: boolean }) {
             <h4>New workflow</h4>
             <label>
               Name
-              <input placeholder="e.g. Outpatient E/M billing" value={newName} onChange={(e) => setNewName(e.target.value)} />
+              <input placeholder="e.g. Approving expense reports" value={newName} onChange={(e) => setNewName(e.target.value)} />
             </label>
             <label>
-              App
-              <input value={newApp} onChange={(e) => setNewApp(e.target.value)} />
+              Software it's done in
+              <input placeholder="e.g. Concur, Salesforce, an internal tool" value={newApp} onChange={(e) => setNewApp(e.target.value)} />
+            </label>
+            <label>
+              What the work is (optional)
+              <textarea
+                rows={2}
+                placeholder="A sentence or two. Helps Claude understand what it's watching."
+                value={newDescription}
+                onChange={(e) => setNewDescription(e.target.value)}
+              />
             </label>
             <button className="primary" onClick={create} disabled={creating || !newName.trim()}>
               Create workflow
@@ -130,8 +144,10 @@ function WorkflowDetail({
       <div>
         <h3 className="title">{workflow.name}</h3>
         <p className="muted">
-          {workflow.app} · {workflow.approved_skills} published to trainees · {workflow.draft_skills} waiting for review
+          {workflow.app ? `${workflow.app} · ` : ""}
+          {workflow.approved_skills} published to trainees · {workflow.draft_skills} waiting for review
         </p>
+        {workflow.description && <p className="muted">{workflow.description}</p>}
       </div>
 
       <article className="card">
@@ -147,6 +163,9 @@ function WorkflowDetail({
           }}
         />
       </article>
+
+      <FieldsEditor workflow={workflow} onSaved={onChanged} />
+      <CasesEditor workflow={workflow} />
 
       {error && <p className="error">{error}</p>}
       <h4>Recorded sessions ({maps.length})</h4>

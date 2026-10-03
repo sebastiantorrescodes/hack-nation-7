@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import store
-from ..models import CLAIM_FIELDS, Skill, WorkMap
+from ..models import Skill, WorkMap
 
 router = APIRouter(prefix="/api", tags=["workmaps"])
 
@@ -44,8 +44,3 @@ async def review_skill(skill_id: str, body: StatusBody) -> Skill:
     if not sk:
         raise HTTPException(404, "skill not found")
     return sk
-
-
-@router.get("/claim-fields")
-def claim_fields() -> dict[str, str]:
-    return CLAIM_FIELDS

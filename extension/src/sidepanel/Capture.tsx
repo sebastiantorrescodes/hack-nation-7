@@ -5,7 +5,7 @@ import { screenshot, snapshotPage } from "../lib/page";
 
 type Line = { t: number; who: "expert" | "agent" | "screen"; text: string; decision?: boolean };
 
-// Wait this long after the biller's last UI action before asking Claude what happened.
+// Wait this long after the expert's last UI action before asking Claude what happened.
 const SETTLE_MS = 2500;
 
 async function ensureMicrophone(): Promise<boolean> {
@@ -78,7 +78,7 @@ export default function Capture({ workflowId, expertName, onRecordingChange, onB
         if (event.is_decision_point && event.ask_why && conv.status === "connected") {
           // Steer the voice agent: it asks the question at the next natural pause.
           conv.sendContextualUpdate(
-            `On screen, the biller just did this: ${event.description}. ` +
+            `On screen, the expert just did this: ${event.description}. ` +
               `This is a judgment call. At the next natural pause, ask: "${event.ask_why}"`,
           );
         }
@@ -91,7 +91,7 @@ export default function Capture({ workflowId, expertName, onRecordingChange, onB
     }
   }
 
-  // UI actions reported by the content script running inside OpenEMR.
+  // UI actions reported by the content script running in the app.
   useEffect(() => {
     const onMsg = (msg: { type?: string; text?: string }) => {
       if (msg.type !== "ui-action" || !sessionRef.current || !msg.text) return;
@@ -156,7 +156,7 @@ export default function Capture({ workflowId, expertName, onRecordingChange, onB
   return (
     <section>
       <p className="muted">
-        Work claims in OpenEMR as usual. The voice agent asks why at each decision point.
+        Work in the app as usual. The voice agent asks why at each decision point.
       </p>
 
       {!live && (

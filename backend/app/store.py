@@ -1,7 +1,7 @@
 """Supabase persistence. Maps the API models (models.py) onto the tables in scripts/db.sql.
 
-- A workflow is what gets taught. Experts record capture sessions into it; trainees practice its approved
-  skills (the published Work Map).
+- A workflow is what gets taught. It defines the fields of the records it works on; experts record capture
+  sessions into it; trainees practice its approved skills (the published Work Map) on its practice `cases`.
 - A capture session is a `sessions` row (kind='capture'); its transcript turns and screen events are
   `transcript_segments` and `events` rows.
 - A Work Map is the set of skills whose source_session is a capture session, so its id is that session's id
@@ -24,6 +24,8 @@ from .models import (
     CaptureSession,
     EvidenceRef,
     Guardrail,
+    PracticeCase,
+    RecordField,
     ScreenEvent,
     Skill,
     TranscriptTurn,
@@ -32,9 +34,8 @@ from .models import (
     WorkMap,
 )
 
-DEMO_WORKFLOW = "Outpatient E/M billing in OpenEMR"
 # Fixed id of the seeded demo capture session, so seeding runs once.
-DEMO_ID = "00000000-0000-4000-8000-00000000de00"
+DEMO_ID = "00000000-0000-4000-8000-00000000de01"
 
 _db: AsyncClient | None = None
 
@@ -92,6 +93,8 @@ def _workflow(row: dict) -> Workflow:
         id=row["id"],
         name=row["name"],
         app=row["app"],
+        description=row["description"] or "",
+        fields=row["fields"] or [],
         approved_skills=sum(s["status"] == "approved" for s in row["skills"]),
         draft_skills=sum(s["status"] == "draft" for s in row["skills"]),
         sessions=sum(s["kind"] == "capture" and s["summary"] is not None for s in row["sessions"]),
@@ -111,9 +114,30 @@ async def get_workflow(workflow_id: str) -> Workflow | None:
     return _workflow(rows[0]) if rows else None
 
 
-async def create_workflow(name: str, app: str) -> Workflow:
-    row = (await _t("workflows").insert({"name": name, "app": app}).execute()).data[0]
-    return Workflow(id=row["id"], name=row["name"], app=row["app"])
+async def create_workflow(name: str, app: str, description: str = "", fields: list[RecordField] | None = None) -> Workflow:
+    row = (
+        await _t("workflows")
+        .insert({"name": name, "app": app, "description": description, "fields": [f.model_dump() for f in fields or []]})
+        .execute()
+    ).data[0]
+    return _workflow({**row, "skills": [], "sessions": []})
+
+
+async def update_workflow(
+    workflow_id: str,
+    *,
+    name: str | None = None,
+    app: str | None = None,
+    description: str | None = None,
+    fields: list[RecordField] | None = None,
+) -> Workflow | None:
+    changes: dict = {k: v for k, v in {"name": name, "app": app, "description": description}.items() if v is not None}
+    if fields is not None:
+        changes["fields"] = [f.model_dump() for f in fields]
+    wid = _id(workflow_id)
+    if wid and changes:
+        await _t("workflows").update(changes).eq("id", wid).execute()
+    return await get_workflow(workflow_id)
 
 
 async def list_published_workflows(learner_name: str | None) -> list[Workflow]:
@@ -131,9 +155,30 @@ async def list_published_workflows(learner_name: str | None) -> list[Workflow]:
     return workflows
 
 
-async def _default_workflow() -> str:
-    rows = (await _t("workflows").select("id").eq("name", DEMO_WORKFLOW).limit(1).execute()).data
-    return rows[0]["id"] if rows else (await _t("workflows").insert({"name": DEMO_WORKFLOW}).execute()).data[0]["id"]
+# --- Practice cases ---------------------------------------------------------
+def _case(row: dict) -> PracticeCase:
+    return PracticeCase(id=row["id"], workflow_id=row["workflow_id"], label=row["label"], data=row["data"])
+
+
+async def list_cases(workflow_id: str) -> list[PracticeCase]:
+    rows = (await _t("cases").select("*").eq("workflow_id", workflow_id).order("created_at").execute()).data
+    return [_case(r) for r in rows]
+
+
+async def get_case(case_id: str) -> PracticeCase | None:
+    cid = _id(case_id)
+    rows = (await _t("cases").select("*").eq("id", cid).execute()).data if cid else []
+    return _case(rows[0]) if rows else None
+
+
+async def create_case(workflow_id: str, label: str, data: dict) -> PracticeCase:
+    row = (await _t("cases").insert({"workflow_id": workflow_id, "label": label, "data": data}).execute()).data[0]
+    return _case(row)
+
+
+async def delete_case(case_id: str) -> bool:
+    cid = _id(case_id)
+    return bool(cid and (await _t("cases").delete().eq("id", cid).execute()).data)
 
 
 # --- Capture ----------------------------------------------------------------
@@ -145,6 +190,7 @@ def _capture(row: dict) -> CaptureSession:
     events = sorted(row["events"], key=lambda r: (r["t_offset_ms"] or 0, r["id"]))
     return CaptureSession(
         id=row["id"],
+        workflow_id=row["workflow_id"],
         expert_name=_name(row),
         started_at=_epoch(row["started_at"]),
         transcript=[TranscriptTurn(t=(r["t_start_ms"] or 0) / 1000, role=r["speaker"], text=r["text"]) for r in segments],
@@ -160,7 +206,7 @@ async def create_capture_session(expert_name: str, workflow_id: str) -> CaptureS
         .insert({"kind": "capture", "user_id": await _user_id(expert_name, "expert"), "workflow_id": workflow_id})
         .execute()
     ).data[0]
-    return CaptureSession(id=row["id"], expert_name=expert_name, started_at=_epoch(row["started_at"]))
+    return CaptureSession(id=row["id"], workflow_id=workflow_id, expert_name=expert_name, started_at=_epoch(row["started_at"]))
 
 
 async def get_capture_session(session_id: str) -> CaptureSession | None:
@@ -185,7 +231,7 @@ async def add_turn(session_id: str, turn: TranscriptTurn) -> None:
 async def record_frame(session_id: str, screen_summary: str, event: ScreenEvent | None) -> None:
     await _t("sessions").update({"screen_summary": screen_summary}).eq("id", session_id).execute()
     if event:
-        payload = event.model_dump(include={"description", "claim_fields", "is_decision_point", "ask_why"})
+        payload = event.model_dump(include={"description", "record_fields", "is_decision_point", "ask_why"})
         await _t("events").insert(
             {"session_id": session_id, "t_offset_ms": _ms(event.t), "type": event.kind, "payload": payload}
         ).execute()
@@ -358,24 +404,26 @@ async def published_skills(workflow_id: str) -> list[Skill]:
 
 
 async def _seed_demo() -> None:
-    """Seeds a published demo workflow so the tutor can be tried before any capture session exists."""
+    """Seeds a published sample workflow, with practice cases, so the tutor can be tried before anything is captured."""
     if (await _t("sessions").select("id").eq("id", DEMO_ID).execute()).data:
         return
-    wm = WorkMap.model_validate_json((SEED_DIR / "demo_workmap.json").read_text(encoding="utf-8"))
-    workflow_id = await _default_workflow()
+    demo = json.loads((SEED_DIR / "demo_workflow.json").read_text(encoding="utf-8"))
+    wf = await create_workflow(**{**demo["workflow"], "fields": [RecordField(**f) for f in demo["workflow"]["fields"]]})
     await _t("sessions").insert(
         {
             "id": DEMO_ID,
             "kind": "capture",
             "status": "done",
-            "user_id": await _user_id(wm.expert_name, "expert"),
-            "workflow_id": workflow_id,
-            "summary": wm.summary,
+            "user_id": await _user_id(demo["expert_name"], "expert"),
+            "workflow_id": wf.id,
+            "summary": demo["summary"],
             "ended_at": _now(),
         }
     ).execute()
-    for sk in wm.skills:
-        await _insert_skill(DEMO_ID, workflow_id, sk, [], "approved")
+    for sk in demo["skills"]:
+        await _insert_skill(DEMO_ID, wf.id, Skill(id="", **sk), [], "approved")
+    for c in demo["cases"]:
+        await create_case(wf.id, c["label"], c["data"])
 
 
 # --- Tutor ------------------------------------------------------------------
@@ -390,20 +438,20 @@ def _attempt(r: dict) -> Attempt:
 
 
 def _tutor(row: dict) -> TutorSession:
-    claim = row["claim"] or {}
+    record = row["record"] or {}
     return TutorSession(
         id=row["id"],
         learner_name=_name(row),
         workflow_id=row["workflow_id"],
-        claim_id=claim.get("id", ""),
-        original_claim=claim,
+        case_id=record.get("id", ""),
+        original_record=record,
         matched_skill_ids=row["matched_skill_ids"] or [],
         attempts=[_attempt(a) for a in sorted(row["attempts"], key=lambda a: a["created_at"])],
         saved=row["status"] == "done",
     )
 
 
-async def create_tutor_session(learner_name: str, workflow_id: str, claim: dict, matched_skill_ids: list[str]) -> TutorSession:
+async def create_tutor_session(learner_name: str, workflow_id: str, record: dict, matched_skill_ids: list[str]) -> TutorSession:
     row = (
         await _t("sessions")
         .insert(
@@ -411,7 +459,7 @@ async def create_tutor_session(learner_name: str, workflow_id: str, claim: dict,
                 "kind": "training",
                 "user_id": await _user_id(learner_name, "trainee"),
                 "workflow_id": workflow_id,
-                "claim": claim,
+                "record": record,
                 "matched_skill_ids": matched_skill_ids,
             }
         )
@@ -468,12 +516,3 @@ async def record_save_check(ts: TutorSession, blocked: dict[str, str]) -> None:
         ).execute()
     saved = {"status": "done", "ended_at": _now()} if not blocked else {"status": "live"}
     await _t("sessions").update(saved).eq("id", ts.id).execute()
-
-
-# --- Practice claims (seed data, not in the database) -----------------------
-def load_claims() -> list[dict]:
-    return json.loads((SEED_DIR / "claims.json").read_text(encoding="utf-8"))
-
-
-def get_claim(claim_id: str) -> dict | None:
-    return next((c for c in load_claims() if c["id"] == claim_id), None)

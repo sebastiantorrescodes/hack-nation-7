@@ -1,4 +1,6 @@
-"""Domain models: capture sessions, the Work Map (skill records), claims and tutor sessions."""
+"""Domain models: workflows and their record fields, capture sessions, the Work Map (skill records),
+practice cases and tutor sessions. Nothing here is specific to one industry: a workflow says what its
+records look like, and skills are conditions over those fields."""
 
 from __future__ import annotations
 
@@ -6,28 +8,19 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# --- Claim vocabulary -------------------------------------------------------
-# Skill triggers and guardrails are written as conditions over these fields, so
-# the tutor can evaluate them deterministically. Keep this in sync with
-# seed/claims.json and the claim form in the frontend.
-CLAIM_FIELDS: dict[str, str] = {
-    "payer": "string - payer name, e.g. 'Medicare', 'Aetna', 'BCBS'",
-    "patient_age": "number - patient age in years",
-    "place_of_service": "string - POS code, e.g. '11' office, '22' outpatient hospital",
-    "visit_type": "string - 'new' or 'established'",
-    "cpt_codes": "list of strings - CPT/HCPCS codes on the claim",
-    "icd10_codes": "list of strings - ICD-10 diagnosis codes",
-    "modifiers": "list of strings - modifiers applied, e.g. '25', '59', 'GT'",
-    "same_day_procedure": "boolean - a procedure was performed on the same day as the E/M visit",
-    "prior_auth_on_file": "boolean - prior authorization is on file",
-    "documentation_complete": "boolean - provider note is signed and supports the codes",
-    "units": "number - total units billed",
-    "charge_amount": "number - total charge in USD",
-    "status": "string - 'draft', 'ready', 'held', 'submitted'",
-    "physician_query": "string - open query to the physician, empty if none",
-}
+FieldType = Literal["string", "number", "boolean", "list"]
+
+
+class RecordField(BaseModel):
+    """One field of the records a workflow works on, e.g. amount (number) on an expense report."""
+
+    name: str  # snake_case key, used in conditions
+    type: FieldType
+    description: str = ""
+
 
 Op = Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "gt", "lt", "is_true", "is_false", "empty", "not_empty"]
+OPS: list[str] = list(Op.__args__)
 
 
 class Condition(BaseModel):
@@ -36,14 +29,18 @@ class Condition(BaseModel):
     values: list[str] = Field(default_factory=list)
 
 
+ActionKind = Literal["set_value", "add_value", "remove_value", "hold", "escalate", "request_info", "submit", "other"]
+ACTION_KINDS: list[str] = list(ActionKind.__args__)
+
+
 class Action(BaseModel):
-    kind: Literal["add_modifier", "remove_modifier", "change_code", "hold_claim", "query_physician", "submit", "other"]
+    kind: ActionKind
     detail: str
 
 
 class Guardrail(BaseModel):
     description: str
-    # Conditions that must all hold on the claim at save time whenever the trigger matched.
+    # Conditions that must all hold on the record at save time whenever the trigger matched.
     must: list[Condition]
 
 
@@ -67,6 +64,7 @@ class Skill(BaseModel):
 
 class WorkMap(BaseModel):
     """The skills captured in one expert session."""
+
     id: str
     session_id: str
     workflow_id: str = ""
@@ -80,10 +78,21 @@ class Workflow(BaseModel):
     id: str
     name: str
     app: str
+    description: str = ""
+    fields: list[RecordField] = Field(default_factory=list)
     approved_skills: int = 0
     draft_skills: int = 0
     sessions: int = 0  # capture sessions with a Work Map
     mastered_skills: int | None = None  # set when listed for a trainee
+
+
+class PracticeCase(BaseModel):
+    """A record as it arrives, before anyone has worked it."""
+
+    id: str
+    workflow_id: str
+    label: str
+    data: dict
 
 
 # --- Capture ----------------------------------------------------------------
@@ -97,13 +106,14 @@ class ScreenEvent(BaseModel):
     t: float
     kind: str
     description: str
-    claim_fields: dict = Field(default_factory=dict)
+    record_fields: dict = Field(default_factory=dict)
     is_decision_point: bool = False
     ask_why: str | None = None
 
 
 class CaptureSession(BaseModel):
     id: str
+    workflow_id: str = ""
     expert_name: str
     started_at: float
     transcript: list[TranscriptTurn] = Field(default_factory=list)
@@ -124,8 +134,8 @@ class TutorSession(BaseModel):
     id: str
     learner_name: str
     workflow_id: str  # trainees practice a workflow's approved skills
-    claim_id: str  # seed claim id, or "live" when read from the OpenEMR page
-    original_claim: dict  # the claim as it arrived; triggers are evaluated against this
+    case_id: str  # practice case id, or "live" when read from the open app
+    original_record: dict  # the record as it arrived; triggers are evaluated against this
     matched_skill_ids: list[str]
     attempts: list[Attempt] = Field(default_factory=list)
     saved: bool = False

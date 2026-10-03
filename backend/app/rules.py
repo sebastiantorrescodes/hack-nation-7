@@ -1,4 +1,4 @@
-"""Deterministic evaluation of skill triggers and guardrails against a claim."""
+"""Deterministic evaluation of skill triggers and guardrails against a record."""
 
 from .models import Condition, Skill
 
@@ -18,8 +18,8 @@ def _num(v) -> float | None:
         return None
 
 
-def check(cond: Condition, claim: dict) -> bool:
-    actual = claim.get(cond.field)
+def check(cond: Condition, record: dict) -> bool:
+    actual = record.get(cond.field)
     vals = [v.strip().upper() for v in cond.values]
     actual_list = _as_list(actual)
 
@@ -52,17 +52,17 @@ def check(cond: Condition, claim: dict) -> bool:
     return False
 
 
-def matches(conds: list[Condition], claim: dict) -> bool:
-    return all(check(c, claim) for c in conds)
+def matches(conds: list[Condition], record: dict) -> bool:
+    return all(check(c, record) for c in conds)
 
 
-def triggered_skills(skills: list[Skill], claim: dict) -> list[Skill]:
-    return [s for s in skills if matches(s.trigger, claim)]
+def triggered_skills(skills: list[Skill], record: dict) -> list[Skill]:
+    return [s for s in skills if matches(s.trigger, record)]
 
 
 def guardrail_violations(skills: list[Skill], original: dict, edited: dict) -> list[tuple[Skill, list[Condition]]]:
-    """Triggers are evaluated on the claim as it arrived (before the learner touched it);
-    guardrails are evaluated on the claim the learner is about to save."""
+    """Triggers are evaluated on the record as it arrived (before the learner touched it);
+    guardrails are evaluated on the record the learner is about to save."""
     out = []
     for s in triggered_skills(skills, original):
         failed = [c for c in s.guardrail.must if not check(c, edited)]

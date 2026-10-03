@@ -35,10 +35,17 @@ export type WorkMap = {
   recorded_at: number;
   skills: Skill[];
 };
+export type FieldType = "string" | "number" | "boolean" | "list";
+/** One field of the records a workflow works on. Skill triggers and guardrails are conditions over these. */
+export type RecordField = { name: string; type: FieldType; description: string };
+export type WorkRecord = Record<string, unknown>;
+export type PracticeCase = { id: string; workflow_id: string; label: string; data: WorkRecord };
 export type Workflow = {
   id: string;
   name: string;
   app: string;
+  description: string;
+  fields: RecordField[];
   approved_skills: number;
   draft_skills: number;
   sessions: number;
@@ -53,4 +60,7 @@ export type ScreenEvent = {
 };
 export type CaptureSession = { id: string; expert_name: string; started_at: number; workmap_id: string | null };
 
-export const fmtCond = (c: Condition) => `${c.field} ${c.op.replace(/_/g, " ")} ${c.values.join(", ")}`.trim();
+export const showValue = (v: unknown) =>
+  Array.isArray(v) ? v.join(", ") || "—" : v === null || v === undefined || v === "" ? "—" : String(v);
+
+export const fmtCond =(c: Condition) => `${c.field} ${c.op.replace(/_/g, " ")} ${c.values.join(", ")}`.trim();

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Workflow } from "../lib/api";
+import { api, type PracticeCase, type WorkRecord, type Workflow } from "../lib/api";
 import { snapshotPage } from "../lib/page";
+import { RecordForm, RecordView } from "./RecordForm";
 
-type Claim = Record<string, unknown> & { id: string; label?: string };
+type ShownRecord = WorkRecord & { id: string; label?: string };
 type DecisionPoint = { skill_id: string; title: string; trigger: string[] };
 type Grade = {
   correct: boolean;
@@ -15,9 +16,6 @@ type Violation = { skill_id: string; title: string; guardrail: string; failed: s
 type CheckResult = { ok: boolean; violations: Violation[] };
 type Report = { headline: string; skills: { skill_id: string; title: string; status: string; note: string }[]; practice_next: string[] };
 
-const SHOWN_FIELDS = ["payer", "patient_age", "place_of_service", "visit_type", "cpt_codes", "icd10_codes", "modifiers", "same_day_procedure", "prior_auth_on_file", "documentation_complete", "status", "physician_query"];
-const show = (v: unknown) => (Array.isArray(v) ? v.join(", ") || "—" : v === null || v === undefined || v === "" ? "—" : String(v));
-
 function violationMessage(v: Violation[]) {
   return v.map((x) => `${x.guardrail}. ${x.expert_name}: “${x.expert_explanation}”`).join("\n\n");
 }
@@ -25,17 +23,17 @@ function violationMessage(v: Violation[]) {
 type Props = {
   workflow: Workflow;
   learner: string;
-  /** True while a claim is being worked, so the parent can keep the learner from navigating away mid-claim. */
+  /** True while a record is being worked, so the parent can keep the learner from navigating away mid-record. */
   onSessionChange: (inSession: boolean) => void;
 };
 
 export default function Tutor({ workflow, learner, onSessionChange }: Props) {
-  const [practiceClaims, setPracticeClaims] = useState<Claim[]>([]);
-  const [source, setSource] = useState<string>("live"); // "live" or a practice claim id
+  const [cases, setCases] = useState<PracticeCase[]>([]);
+  const [source, setSource] = useState<string>("live"); // "live" or a practice case id
 
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [claim, setClaim] = useState<Claim | null>(null);
-  const [edited, setEdited] = useState<Claim | null>(null);
+  const [record, setRecord] = useState<ShownRecord | null>(null);
+  const [edited, setEdited] = useState<WorkRecord | null>(null);
   const [points, setPoints] = useState<DecisionPoint[]>([]);
   const [predictions, setPredictions] = useState<Record<string, string>>({});
   const [grades, setGrades] = useState<Record<string, Grade>>({});
@@ -46,17 +44,23 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
 
   const sessionRef = useRef<string | null>(null);
   sessionRef.current = sessionId;
-  const isLive = claim?.id === "live";
+  const isLive = record?.id === "live";
+  const appName = workflow.app || "the app";
 
   useEffect(() => {
-    api<Claim[]>("/api/tutor/claims").then(setPracticeClaims).catch(() => {});
-    // Leaving the tutor: stop holding Save clicks in OpenEMR.
+    api<PracticeCase[]>(`/api/workflows/${workflow.id}/cases`)
+      .then((c) => {
+        setCases(c);
+        if (c.length) setSource(c[0].id);
+      })
+      .catch((e) => setError(String(e)));
+    // Leaving the tutor: stop holding Save clicks in the app.
     return () => void chrome.storage.local.set({ guardSave: false });
-  }, []);
+  }, [workflow.id]);
 
   useEffect(() => onSessionChange(!!sessionId && !report), [sessionId, report, onSessionChange]);
 
-  // The content script in OpenEMR asks us before letting a Save click through.
+  // The content script in the app asks us before letting a Save/Submit click through.
   useEffect(() => {
     const onMsg = (msg: { type?: string }, _sender: chrome.runtime.MessageSender, sendResponse: (r: unknown) => void) => {
       if (msg.type !== "save-attempt") return;
@@ -88,16 +92,16 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     setPredictions({});
     setCheck(null);
     setReport(null);
-    setBusy(source === "live" ? "Reading the claim from OpenEMR…" : "Starting…");
+    setBusy(source === "live" ? `Reading the record from ${appName}…` : "Starting…");
     try {
       const body =
         source === "live"
           ? { learner_name: learner, workflow_id: workflow.id, page: await snapshotPage() }
-          : { learner_name: learner, workflow_id: workflow.id, claim_id: source };
-      const res = await api<{ session: { id: string }; claim: Claim; decision_points: DecisionPoint[] }>("/api/tutor/sessions", { body });
+          : { learner_name: learner, workflow_id: workflow.id, case_id: source };
+      const res = await api<{ session: { id: string }; record: ShownRecord; decision_points: DecisionPoint[] }>("/api/tutor/sessions", { body });
       setSessionId(res.session.id);
-      setClaim(res.claim);
-      setEdited(structuredClone(res.claim));
+      setRecord(res.record);
+      setEdited(structuredClone(res.record));
       setPoints(res.decision_points);
       await chrome.storage.local.set({ guardSave: source === "live" });
     } catch (e) {
@@ -122,9 +126,9 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
 
   async function savePractice() {
     if (!sessionId || !edited) return;
-    setBusy("Checking the claim…");
+    setBusy("Checking your changes…");
     try {
-      setCheck(await api<CheckResult>(`/api/tutor/sessions/${sessionId}/check`, { body: { claim: edited } }));
+      setCheck(await api<CheckResult>(`/api/tutor/sessions/${sessionId}/check`, { body: { record: edited } }));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -145,24 +149,20 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     }
   }
 
-  function setField(field: string, value: string, list = false) {
-    setEdited((prev) => (prev ? { ...prev, [field]: list ? value.split(",").map((s) => s.trim()).filter(Boolean) : value } : prev));
-  }
-
   return (
     <section>
       {!sessionId && (
         <>
-          <p className="muted">Work a claim you haven't seen. Predict each decision, then save. The tutor checks the claim before it saves.</p>
+          <p className="muted">Work a record you haven't seen. Predict each decision, then save. The tutor checks your work before it saves.</p>
           <label>
-            Claim
+            Record
             <select value={source} onChange={(e) => setSource(e.target.value)}>
-              <option value="live">The claim open in OpenEMR</option>
-              {practiceClaims.map((c) => (
+              {cases.map((c) => (
                 <option key={c.id} value={c.id}>
                   Practice: {c.label}
                 </option>
               ))}
+              <option value="live">The record open in {appName}</option>
             </select>
           </label>
           <button className="primary" onClick={start} disabled={!!busy}>
@@ -174,28 +174,21 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
       {busy && <p className="muted">{busy}</p>}
       {error && <p className="error">{error}</p>}
 
-      {claim && !report && (
+      {record && !report && (
         <>
           <article className="card">
-            <h3>{claim.label ?? claim.id}</h3>
-            <dl className="grid">
-              {SHOWN_FIELDS.map((f) => (
-                <div key={f}>
-                  <dt>{f.replace(/_/g, " ")}</dt>
-                  <dd>{show(claim[f])}</dd>
-                </div>
-              ))}
-            </dl>
+            <h3>{record.label ?? record.id}</h3>
+            <RecordView fields={workflow.fields} record={record} />
           </article>
 
           <h4>Decision points ({points.length})</h4>
-          {points.length === 0 && <p className="muted">No skills from this Work Map apply to this claim.</p>}
+          {points.length === 0 && <p className="muted">No skills from this Work Map apply to this record.</p>}
           {points.map((p, i) => {
             const g = grades[p.skill_id];
             return (
               <article key={p.skill_id} className="card">
                 <p>
-                  <b>Decision {i + 1}.</b> Something on this claim needs a judgment call. What would you do, and why?
+                  <b>Decision {i + 1}.</b> Something on this record needs a judgment call. What would you do, and why?
                 </p>
                 <textarea
                   rows={3}
@@ -223,38 +216,21 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
 
           {!isLive && edited && (
             <article className="card">
-              <h4>Fix the claim</h4>
-              <label>
-                CPT codes
-                <input value={show(edited.cpt_codes).replace("—", "")} onChange={(e) => setField("cpt_codes", e.target.value, true)} />
-              </label>
-              <label>
-                Modifiers
-                <input value={show(edited.modifiers).replace("—", "")} onChange={(e) => setField("modifiers", e.target.value, true)} />
-              </label>
-              <label>
-                Status
-                <select value={String(edited.status ?? "draft")} onChange={(e) => setField("status", e.target.value)}>
-                  {["draft", "ready", "held", "submitted"].map((s) => (
-                    <option key={s}>{s}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Physician query
-                <input value={String(edited.physician_query ?? "")} onChange={(e) => setField("physician_query", e.target.value)} />
-              </label>
+              <h4>Make your changes</h4>
+              <RecordForm fields={workflow.fields} record={edited} onChange={setEdited} />
               <button className="primary" onClick={savePractice} disabled={!!busy}>
-                Save claim
+                Save
               </button>
             </article>
           )}
-          {isLive && <p className="muted">Make your changes in OpenEMR and press Save there. The tutor checks the claim before it goes through.</p>}
+          {isLive && (
+            <p className="muted">Make your changes in {appName} and press Save or Submit there. The tutor checks your work before it goes through.</p>
+          )}
 
           {check && (
             <div className={check.ok ? "feedback ok" : "feedback bad"}>
               {check.ok ? (
-                <b>Claim passes every guardrail. Saved.</b>
+                <b>Passes every guardrail. Saved.</b>
               ) : (
                 <>
                   <b>Save blocked.</b>
@@ -303,11 +279,11 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
           <button
             onClick={() => {
               setSessionId(null);
-              setClaim(null);
+              setRecord(null);
               setReport(null);
             }}
           >
-            New claim
+            Another record
           </button>
         </article>
       )}

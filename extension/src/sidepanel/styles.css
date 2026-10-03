@@ -93,3 +93,11 @@ ol.log .t { color: var(--muted); }
 ol.log .who { color: var(--muted); text-transform: uppercase; font-size: 11px; padding-top: 2px; }
 ol.log li.decision { background: var(--decision); }
 ol.log li.log-screen:not(.decision) { color: var(--muted); }
+
+.contents { display: contents; }
+.spacer { flex: 1; }
+.field-row { display: grid; grid-template-columns: 1fr 90px auto; gap: 6px; }
+.field-row .wide { grid-column: 1 / -1; }
+.field-row + .field-row { border-top: 1px solid var(--border); padding-top: 8px; }
+details.case > summary { cursor: pointer; }
+details.case[open] { display: flex; flex-direction: column; gap: 6px; }

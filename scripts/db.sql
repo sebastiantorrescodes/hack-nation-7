@@ -1,6 +1,7 @@
 -- AI Apprentice: Supabase / Postgres schema
 -- Flow: expert capture session -> raw events/transcript/media -> Work Map (skills)
 --       -> expert approves -> published Work Map -> trainee sessions -> attempts -> mastery
+-- Includes everything in migrations/; on an existing database, run those instead.
 
 create extension if not exists "pgcrypto";
 
@@ -12,13 +13,28 @@ create table users (
   created_at  timestamptz default now()
 );
 
--- A workflow being taught, e.g. "Outpatient E/M billing in OpenEMR"
+-- A workflow being taught, e.g. "Approving expense reports in Concur"
 create table workflows (
   id          uuid primary key default gen_random_uuid(),
   name        text not null,
-  app         text not null default 'OpenEMR',
+  app         text not null default '',        -- the software it's done in
+  description text,
+  -- What its records look like: [{"name": "amount", "type": "number", "description": "..."}].
+  -- type is string | number | boolean | list. Triggers and guardrails are conditions over these fields.
+  -- Claude proposes them from the first capture session; the expert can edit them.
+  fields      jsonb not null default '[]',
   created_at  timestamptz default now()
 );
+
+-- Practice cases: records as they arrive, before anyone has worked them, for trainees to practice on
+create table cases (
+  id          uuid primary key default gen_random_uuid(),
+  workflow_id uuid references workflows(id) on delete cascade,
+  label       text not null,
+  data        jsonb not null,
+  created_at  timestamptz default now()
+);
+create index on cases (workflow_id);
 
 -- ───────────── 1. CAPTURE (expert) ─────────────
 create table sessions (
@@ -31,9 +47,8 @@ create table sessions (
   el_conversation_id text,                  -- ElevenLabs conversation id (to pull transcript)
   summary       text,                       -- capture: Work Map summary (Work Map = skills with source_session = this)
   screen_summary text,                      -- capture: latest screen description, context for the next frame
-  capture_session_id uuid references sessions(id), -- training: Work Map being practiced
-  claim         jsonb,                      -- training: the claim as it arrived; triggers are evaluated on this
-  matched_skill_ids uuid[] default '{}',    -- training: skills whose trigger matched the claim
+  record        jsonb,                      -- training: the record as it arrived; triggers are evaluated on this
+  matched_skill_ids uuid[] default '{}',    -- training: skills whose trigger matched the record
   started_at    timestamptz default now(),
   ended_at      timestamptz
 );
@@ -45,17 +60,17 @@ create table events (
   ts          timestamptz not null default now(),
   t_offset_ms integer,                      -- ms since session start, aligns with video
   type        text not null,                -- field_changed | save_clicked | page_view | look_at_screen
-  page        text,                         -- e.g. 'fee_sheet', 'encounter'
+  page        text,                         -- screen or URL path the event happened on
   field       text,
   old_value   text,
   new_value   text,
-  encounter_id text,                        -- OpenEMR encounter, to pull FHIR context
+  record_id   text,                         -- id of the record being worked in the app, if it has one
   frame_url   text,                         -- screenshot at this moment (Storage)
   payload     jsonb default '{}'
 );
 create index on events (session_id, t_offset_ms);
 
--- What the expert said (from ElevenLabs transcript, PHI-redacted)
+-- What the expert said (from the ElevenLabs transcript)
 create table transcript_segments (
   id          bigserial primary key,
   session_id  uuid references sessions(id) on delete cascade,
@@ -72,13 +87,13 @@ create table skills (
   id             uuid primary key default gen_random_uuid(),
   workflow_id    uuid references workflows(id) on delete cascade,
   source_session uuid references sessions(id),
-  name           text not null,             -- "ER claims from out-of-network providers"
+  name           text not null,             -- "Hold expenses over $75 without a receipt"
   trigger        jsonb not null,            -- machine-checkable conditions, see example below
   action         text not null,             -- what to do
-  action_kind    text,                      -- add_modifier | remove_modifier | change_code | hold_claim | query_physician | submit | other
+  action_kind    text,                      -- set_value | add_value | remove_value | hold | escalate | request_info | submit | other
   reason_quote   text,                      -- expert's own words
   guardrail      jsonb,                     -- condition that must block save
-  guardrail_msg  text,                      -- "Hold on — Maria would stop here. Why?"
+  guardrail_msg  text,                      -- "Expenses over $75 need a receipt before approval"
   clip_start_ms  integer,                   -- video clip of the expert doing it
   clip_end_ms    integer,
   status         text not null default 'draft' check (status in ('draft', 'approved', 'rejected')),
@@ -88,10 +103,10 @@ create table skills (
 );
 create index on skills (workflow_id, status);
 
--- Example trigger / guardrail JSON:
--- trigger:   {"all": [{"field": "cpt", "op": "in", "value": ["99213","99214"]},
---                     {"field": "procedure_same_day", "op": "eq", "value": true}]}
--- guardrail: {"all": [{"field": "modifier", "op": "not_contains", "value": "25"}]}
+-- Example trigger / guardrail JSON (fields come from the workflow; values are always strings):
+-- trigger:   {"all": [{"field": "amount", "op": "gt", "values": ["75"]},
+--                     {"field": "has_receipt", "op": "is_false", "values": []}]}
+-- guardrail: {"all": [{"field": "status", "op": "eq", "values": ["on_hold"]}]}
 
 -- Links a skill to the exact evidence it came from (auditability)
 create table skill_evidence (
@@ -110,7 +125,7 @@ create table attempts (
   session_id    uuid references sessions(id) on delete cascade,
   skill_id      uuid references skills(id),
   trainee_id    uuid references users(id),
-  prediction    text,                       -- answer to "what would you code this as, and why?"
+  prediction    text,                       -- answer to "what would you do here, and why?"
   outcome       text not null check (outcome in ('correct', 'hinted', 'caught', 'missed')),
   blocked_save  boolean default false,
   tutor_message text,
