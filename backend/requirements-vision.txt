@@ -1,0 +1,6 @@
+# Optional dependencies for Step 1's local Hugging Face vision provider.
+pydantic>=2.7,<3
+pillow>=10.4
+transformers>=4.57,<6
+torch>=2.5
+torchvision>=0.20
