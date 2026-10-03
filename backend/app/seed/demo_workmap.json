@@ -1,0 +1,69 @@
+{
+  "id": "demo",
+  "session_id": "demo",
+  "expert_name": "Demo expert (seed data)",
+  "summary": "Hand-written sample Work Map so the tutor works before any real capture session.",
+  "skills": [
+    {
+      "id": "s1",
+      "title": "Add modifier 25 when an E/M visit and a minor procedure share a date",
+      "trigger": [
+        {"field": "cpt_codes", "op": "in", "values": ["99212", "99213", "99214", "99215"]},
+        {"field": "same_day_procedure", "op": "is_true", "values": []},
+        {"field": "modifiers", "op": "not_contains", "values": ["25"]}
+      ],
+      "action": {"kind": "add_modifier", "detail": "Append modifier 25 to the E/M code"},
+      "expert_explanation": "If they did the injection the same day, the payer assumes the visit was just the pre-procedure check. Twenty-five tells them the visit was its own thing. No 25, and the E/M gets bundled away.",
+      "guardrail": {
+        "description": "E/M billed with a same-day procedure must carry modifier 25",
+        "must": [{"field": "modifiers", "op": "contains", "values": ["25"]}]
+      },
+      "evidence": []
+    },
+    {
+      "id": "s2",
+      "title": "Hold advanced imaging without prior auth",
+      "trigger": [
+        {"field": "cpt_codes", "op": "in", "values": ["72148", "70551", "73721"]},
+        {"field": "prior_auth_on_file", "op": "is_false", "values": []}
+      ],
+      "action": {"kind": "hold_claim", "detail": "Hold the claim and request the auth number from the front desk"},
+      "expert_explanation": "BCBS will deny an MRI with no auth every single time, and a denial is way harder to fix than a hold. I hold it and chase the auth first.",
+      "guardrail": {
+        "description": "Imaging without prior auth must not be submitted",
+        "must": [{"field": "status", "op": "eq", "values": ["held"]}]
+      },
+      "evidence": []
+    },
+    {
+      "id": "s3",
+      "title": "Query the physician when the note isn't signed",
+      "trigger": [{"field": "documentation_complete", "op": "is_false", "values": []}],
+      "action": {"kind": "query_physician", "detail": "Send a query asking the provider to sign the note, and hold the claim"},
+      "expert_explanation": "An unsigned note is no note as far as an auditor is concerned. I never send it out, I ping the doctor and park it.",
+      "guardrail": {
+        "description": "Unsigned documentation requires a physician query and a hold",
+        "must": [
+          {"field": "physician_query", "op": "not_empty", "values": []},
+          {"field": "status", "op": "eq", "values": ["held"]}
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "id": "s4",
+      "title": "Use POS 10 with modifier 95 for Medicare telehealth from home",
+      "trigger": [
+        {"field": "payer", "op": "eq", "values": ["Medicare"]},
+        {"field": "place_of_service", "op": "eq", "values": ["10"]}
+      ],
+      "action": {"kind": "add_modifier", "detail": "Add modifier 95 to the visit code"},
+      "expert_explanation": "For Medicare video visits at home we keep POS 10 and add 95. People forget the 95 and it comes back paid at the wrong rate.",
+      "guardrail": {
+        "description": "Medicare telehealth from home needs modifier 95",
+        "must": [{"field": "modifiers", "op": "contains", "values": ["95"]}]
+      },
+      "evidence": []
+    }
+  ]
+}

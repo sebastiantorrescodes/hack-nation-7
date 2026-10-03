@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Billing Apprentice",
+  "version": "0.1.0",
+  "description": "Captures a senior biller's know-how in OpenEMR and tutors new hires on it.",
+  "action": { "default_title": "Open Billing Apprentice" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["sidePanel", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:8300/*",
+    "http://127.0.0.1:8300/*",
+    "http://localhost:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:8300/*", "http://127.0.0.1:8300/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ]
+}

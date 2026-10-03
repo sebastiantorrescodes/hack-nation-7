@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Microphone access</title>
+    <style>
+      body { font: 15px/1.5 system-ui, sans-serif; max-width: 520px; margin: 64px auto; padding: 0 16px; color: #1a1a1a; }
+      #status { margin-top: 16px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Allow microphone</h1>
+    <p>
+      Chrome can't show the microphone prompt inside a side panel, so Billing Apprentice asks for it here once.
+      After you allow it, close this tab and start the interview from the side panel again.
+    </p>
+    <div id="status">Waiting for permission…</div>
+    <script type="module" src="/src/permission.ts"></script>
+  </body>
+</html>

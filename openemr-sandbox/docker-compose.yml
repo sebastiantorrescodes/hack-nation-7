@@ -1,0 +1,35 @@
+# OpenEMR - just for showing the screen in the demo
+# Start:  docker compose up -d     (first boot takes ~3-5 min)
+# Open:   http://localhost:8300
+# Login:  admin / pass
+ 
+services:
+  mysql:
+    image: mariadb:11.8
+    restart: unless-stopped
+    command: ['mariadbd', '--character-set-server=utf8mb4']
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+    volumes:
+      - databasevolume:/var/lib/mysql
+ 
+  openemr:
+    image: openemr/openemr:8.4.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8300:80"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASS: root
+      MYSQL_USER: openemr
+      MYSQL_PASS: openemr
+      OE_USER: admin
+      OE_PASS: pass
+    volumes:
+      - sitevolume:/var/www/localhost/htdocs/openemr/sites
+    depends_on:
+      - mysql
+ 
+volumes:
+  databasevolume: {}
+  sitevolume: {}
