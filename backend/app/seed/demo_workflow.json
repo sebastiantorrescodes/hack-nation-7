@@ -1,0 +1,78 @@
+{
+  "workflow": {
+    "name": "Expense report review (sample)",
+    "app": "Any expense tool",
+    "description": "Sample workflow seeded so the tutor can be tried before any expert session is recorded. A finance reviewer checks submitted expense reports before they are paid.",
+    "fields": [
+      {"name": "amount", "type": "number", "description": "total amount claimed, in USD"},
+      {"name": "category", "type": "string", "description": "expense category, e.g. 'travel', 'lodging', 'meals', 'software'"},
+      {"name": "has_receipt", "type": "boolean", "description": "a receipt is attached"},
+      {"name": "days_since_expense", "type": "number", "description": "days between the expense and the report being submitted"},
+      {"name": "attendees", "type": "list", "description": "people present, for meals and entertainment"},
+      {"name": "tags", "type": "list", "description": "tags on the report, e.g. 'late_submission'"},
+      {"name": "status", "type": "string", "description": "'submitted', 'approved', 'on_hold' or 'returned'"},
+      {"name": "note", "type": "string", "description": "reviewer's note to the employee, empty if none"}
+    ]
+  },
+  "expert_name": "Sample expert",
+  "summary": "Hand-written sample Work Map: three judgment calls a senior reviewer makes on expense reports.",
+  "skills": [
+    {
+      "title": "Hold expenses over $75 that have no receipt",
+      "trigger": [
+        {"field": "amount", "op": "gt", "values": ["75"]},
+        {"field": "has_receipt", "op": "is_false", "values": []}
+      ],
+      "action": {"kind": "hold", "detail": "Put the report on hold and ask the employee for the receipt"},
+      "expert_explanation": "Anything over seventy-five needs a receipt. If I approve it without one, audit kicks it back months later and it's a mess to chase.",
+      "guardrail": {
+        "description": "Expenses over $75 without a receipt can't be approved",
+        "must": [{"field": "status", "op": "eq", "values": ["on_hold"]}]
+      }
+    },
+    {
+      "title": "Return meals that don't list attendees",
+      "trigger": [
+        {"field": "category", "op": "eq", "values": ["meals"]},
+        {"field": "attendees", "op": "empty", "values": []}
+      ],
+      "action": {"kind": "request_info", "detail": "Return the report asking who attended"},
+      "expert_explanation": "A meal is only reimbursable if we know who was there. I send it back asking for names rather than guessing.",
+      "guardrail": {
+        "description": "Meals without attendees go back to the employee with a note",
+        "must": [
+          {"field": "status", "op": "eq", "values": ["returned"]},
+          {"field": "note", "op": "not_empty", "values": []}
+        ]
+      }
+    },
+    {
+      "title": "Tag expenses submitted more than 60 days late",
+      "trigger": [{"field": "days_since_expense", "op": "gt", "values": ["60"]}],
+      "action": {"kind": "escalate", "detail": "Add the late_submission tag so it routes to the manager"},
+      "expert_explanation": "Anything older than two months needs the manager to sign off. Tagging it late routes it to them automatically.",
+      "guardrail": {
+        "description": "Late submissions must be tagged for manager sign-off",
+        "must": [{"field": "tags", "op": "contains", "values": ["late_submission"]}]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "label": "Taxi to the airport, receipt attached",
+      "data": {"amount": 42, "category": "travel", "has_receipt": true, "days_since_expense": 3, "attendees": [], "tags": [], "status": "submitted", "note": ""}
+    },
+    {
+      "label": "Two hotel nights, no receipt",
+      "data": {"amount": 310, "category": "lodging", "has_receipt": false, "days_since_expense": 10, "attendees": [], "tags": [], "status": "submitted", "note": ""}
+    },
+    {
+      "label": "Client dinner",
+      "data": {"amount": 186, "category": "meals", "has_receipt": true, "days_since_expense": 5, "attendees": [], "tags": [], "status": "submitted", "note": ""}
+    },
+    {
+      "label": "Conference ticket from last quarter",
+      "data": {"amount": 95, "category": "software", "has_receipt": false, "days_since_expense": 75, "attendees": [], "tags": [], "status": "submitted", "note": ""}
+    }
+  ]
+}

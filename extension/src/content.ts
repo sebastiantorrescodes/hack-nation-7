@@ -1,9 +1,10 @@
-// Runs inside every OpenEMR frame (OpenEMR puts each tab in its own iframe).
-// 1. Reports what the user does (field changes, button clicks) to the side panel.
-// 2. In tutor mode, holds the Save click until the tutor's guardrail check passes.
+// Runs in every frame of every page (many apps nest their screens in iframes).
+// 1. Reports what the user does (field changes, button clicks) to the side panel. The side panel ignores
+//    these unless an interview is being recorded.
+// 2. In tutor mode, holds Save/Submit clicks until the tutor's guardrail check passes.
 // Keep this file free of imports: content scripts can't load shared chunks.
 
-const SAVE_RE = /\bsave\b/i;
+const SAVE_RE = /\b(save|submit)\b/i;
 let guardSave = false;
 let bypass = false;
 
@@ -50,6 +51,7 @@ document.addEventListener(
   (e) => {
     const el = e.target as Element;
     if (!el.matches("input, select, textarea")) return;
+    if ((el as HTMLInputElement).type === "password") return; // runs on every site: never report passwords
     report(`changed "${labelFor(el)}" to "${valueOf(el).slice(0, 120)}"`);
   },
   true,
@@ -87,10 +89,10 @@ document.addEventListener(
 
     if (!guardSave || bypass || !SAVE_RE.test(text)) return;
 
-    // Hold the save until the tutor has checked the claim against the Work Map guardrails.
+    // Hold the save until the tutor has checked the record against the Work Map guardrails.
     e.preventDefault();
     e.stopImmediatePropagation();
-    const pending = overlay("Checking this claim against the Work Map…", "info");
+    const pending = overlay("Checking this against the Work Map…", "info");
     let res: { ok: boolean; message?: string } | undefined;
     try {
       res = await chrome.runtime.sendMessage({ type: "save-attempt" });

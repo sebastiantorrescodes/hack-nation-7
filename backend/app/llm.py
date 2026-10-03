@@ -5,7 +5,7 @@ import json
 import anthropic
 
 from .config import CLAUDE_FAST_MODEL, CLAUDE_MODEL
-from .models import CLAIM_FIELDS
+from .models import ACTION_KINDS, OPS, RecordField, Workflow
 
 client = anthropic.AsyncAnthropic()
 
@@ -56,21 +56,15 @@ _STR = {"type": "string"}
 _BOOL = {"type": "boolean"}
 _NUM = {"type": "number"}
 
-CONDITION_SCHEMA = _obj(
-    {
-        "field": {"type": "string", "enum": list(CLAIM_FIELDS)},
-        "op": {
-            "type": "string",
-            "enum": ["eq", "neq", "in", "not_in", "contains", "not_contains", "gt", "lt", "is_true", "is_false", "empty", "not_empty"],
-        },
-        "values": {"type": "array", "items": _STR},
-    }
-)
+# Field names aren't an enum: each workflow has its own, and the Work Map builder may add new ones.
+CONDITION_SCHEMA = _obj({"field": _STR, "op": {"type": "string", "enum": OPS}, "values": {"type": "array", "items": _STR}})
+
+FIELD_SCHEMA = _obj({"name": _STR, "type": {"type": "string", "enum": ["string", "number", "boolean", "list"]}, "description": _STR})
 
 FRAME_SCHEMA = _obj(
     {
         "screen_summary": _STR,
-        "claim_fields_json": _STR,
+        "record_fields_json": _STR,
         "changed": _BOOL,
         "event_kind": _STR,
         "event_description": _STR,
@@ -82,21 +76,14 @@ FRAME_SCHEMA = _obj(
 WORKMAP_SCHEMA = _obj(
     {
         "summary": _STR,
+        "fields": {"type": "array", "items": FIELD_SCHEMA},
         "skills": {
             "type": "array",
             "items": _obj(
                 {
                     "title": _STR,
                     "trigger": {"type": "array", "items": CONDITION_SCHEMA},
-                    "action": _obj(
-                        {
-                            "kind": {
-                                "type": "string",
-                                "enum": ["add_modifier", "remove_modifier", "change_code", "hold_claim", "query_physician", "submit", "other"],
-                            },
-                            "detail": _STR,
-                        }
-                    ),
+                    "action": _obj({"kind": {"type": "string", "enum": ACTION_KINDS}, "detail": _STR}),
                     "expert_explanation": _STR,
                     "guardrail": _obj({"description": _STR, "must": {"type": "array", "items": CONDITION_SCHEMA}}),
                     "evidence": {"type": "array", "items": _obj({"t": _NUM, "quote": _STR})},
@@ -126,8 +113,18 @@ REPORT_SCHEMA = _obj(
 )
 
 
-def claim_fields_doc() -> str:
-    return "\n".join(f"- {k}: {v}" for k, v in CLAIM_FIELDS.items())
+def fields_doc(fields: list[RecordField]) -> str:
+    return "\n".join(f"- {f.name} ({f.type}): {f.description}" for f in fields) or "(none defined yet)"
+
+
+def workflow_doc(wf: Workflow) -> str:
+    """What every prompt needs to know about the work being taught."""
+    return (
+        f"Workflow: {wf.name}\n"
+        f"Software: {wf.app or '(not specified)'}\n"
+        f"Description: {wf.description or '(none)'}\n"
+        f"Record fields:\n{fields_doc(wf.fields)}"
+    )
 
 
 __all__ = [
@@ -139,5 +136,6 @@ __all__ = [
     "WORKMAP_SCHEMA",
     "GRADE_SCHEMA",
     "REPORT_SCHEMA",
-    "claim_fields_doc",
+    "fields_doc",
+    "workflow_doc",
 ]

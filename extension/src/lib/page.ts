@@ -1,9 +1,10 @@
-// Read the OpenEMR tab from the side panel.
+// Read the app the user is working in (the active tab) from the side panel.
 
-export async function getOpenEmrTab(): Promise<chrome.tabs.Tab> {
+export async function getAppTab(): Promise<chrome.tabs.Tab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url || !/^http:\/\/(localhost|127\.0\.0\.1):8300\//.test(tab.url)) {
-    throw new Error("Open OpenEMR (http://localhost:8300) in the active tab first.");
+  // Chrome doesn't let extensions read its own pages (chrome://, the Web Store, other extensions).
+  if (!tab?.id || !tab.url || !/^https?:\/\//.test(tab.url)) {
+    throw new Error("Open the app you're working in (a normal web page) in the active tab first.");
   }
   return tab;
 }
@@ -37,9 +38,9 @@ function snapshotFrame() {
   };
 }
 
-/** Text snapshot of every frame in the OpenEMR tab: field labels/values plus visible text. */
+/** Text snapshot of every frame in the active tab: field labels/values plus visible text. */
 export async function snapshotPage(): Promise<string> {
-  const tab = await getOpenEmrTab();
+  const tab = await getAppTab();
   const results = await chrome.scripting.executeScript({ target: { tabId: tab.id!, allFrames: true }, func: snapshotFrame });
   return results
     .map((r) => r.result)
@@ -50,7 +51,7 @@ export async function snapshotPage(): Promise<string> {
 
 /** JPEG of the visible tab, base64 without the data: prefix. */
 export async function screenshot(): Promise<string> {
-  const tab = await getOpenEmrTab();
+  const tab = await getAppTab();
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 60 });
   return dataUrl.split(",")[1];
 }
