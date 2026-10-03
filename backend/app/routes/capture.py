@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import store
-from ..llm import CLAUDE_FAST_MODEL, FRAME_SCHEMA, WORKMAP_SCHEMA, structured, workflow_doc
+from ..llm import FRAME_SCHEMA, WORKMAP_SCHEMA, structured, workflow_doc
 from ..models import CaptureSession, Condition, RecordField, ScreenEvent, Skill, TranscriptTurn, Workflow, WorkMap
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
@@ -110,7 +110,6 @@ async def analyze_frame(session_id: str, body: FrameBody) -> ScreenEvent | None:
     if body.image_base64:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": body.image_base64}})
     result = await structured(
-        model=CLAUDE_FAST_MODEL,
         effort="low",
         max_tokens=4000,
         system=FRAME_SYSTEM,
@@ -175,7 +174,7 @@ def _type_for(c: Condition) -> str:
 
 def merge_fields(existing: list[RecordField], proposed: list[RecordField], skills: list[Skill]) -> list[RecordField]:
     """The workflow's fields after a Work Map build. Existing fields (possibly edited by the expert) never change;
-    new ones are added, including any a skill uses that Claude forgot to declare (typed from how it's used)."""
+    new ones are added, including any a skill uses that the model forgot to declare (typed from how it's used)."""
     merged = {f.name: f for f in existing}
     for f in proposed:
         merged.setdefault(f.name, f)

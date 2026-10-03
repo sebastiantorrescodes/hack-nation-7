@@ -1,7 +1,10 @@
 # Qwen API setup
 
-The staged apprentice now defaults to OpenRouter API reasoning instead of Claude.
-No model download, Torch, GPU, or Anthropic key is needed for this agent.
+Every LLM call in the backend goes through OpenRouter: the capture routes (frame
+analysis, Work Map), the tutor routes (record extraction, grading, reports) and the
+staged apprentice. No model download, Torch, GPU, or Anthropic key is needed.
+The model must accept images, because capture sends screenshots, and must support
+structured outputs. `qwen/qwen3.8-27b:free` does both.
 
 1. Create an OpenRouter account and a key at https://openrouter.ai/keys.
 2. Create `backend/.env` and add these lines, replacing the placeholder locally:
@@ -33,7 +36,10 @@ changes are needed. Free capacity is not a guaranteed hackathon service.
 
 ## Files
 
-- `backend/app/api_llm.py`: server-side HTTP adapter and free-only routing.
+- `backend/app/api_llm.py`: server-side HTTP adapter and free-only routing. Converts
+  image blocks to OpenRouter's format and maps `effort` to reasoning effort.
+- `backend/app/llm.py`: schemas and prompt helpers for the capture/tutor routes; its
+  `structured()` delegates to the adapter.
 - `backend/app/agent/apprentice.py`: calls the adapter for one bounded decision.
 - `backend/scripts/test_agent_api.py`: live smoke test using synthetic facts.
 - `backend/tests/test_api_llm.py`: offline API contract and failure tests.
@@ -41,9 +47,9 @@ changes are needed. Free capacity is not a guaranteed hackathon service.
 
 ## Remaining integration
 
-The existing FastAPI capture/tutor routes still use the legacy Claude adapter.
-The new agent must next be wired into browser capture, followed by ElevenLabs
-speech and Supabase persistence. Local Qwen screenshot vision remains a separate
+The capture/tutor routes use the same adapter, but capture still runs its own
+frame-analysis prompt. The apprentice must next be wired into browser capture,
+followed by ElevenLabs speech and Supabase persistence. Local Qwen screenshot vision remains a separate
 provider and is not enabled by this API change.
 
 For judges, the hosted backend should hold the team's API key so visitors can

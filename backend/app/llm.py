@@ -1,17 +1,9 @@
-"""Claude calls. Every call returns JSON constrained by a schema (structured outputs)."""
+"""LLM calls for the capture and tutor routes, through the free-only OpenRouter adapter.
+Every call returns JSON constrained by a schema (structured outputs)."""
 
-import json
-
-import anthropic
-
-from .config import CLAUDE_FAST_MODEL, CLAUDE_MODEL
+from . import api_llm
+from .api_llm import ReasoningAPIError
 from .models import ACTION_KINDS, OPS, RecordField, Workflow
-
-client = anthropic.AsyncAnthropic()
-
-
-class LLMRefusal(Exception):
-    pass
 
 
 async def structured(
@@ -19,27 +11,11 @@ async def structured(
     system: str,
     content: list[dict] | str,
     schema: dict,
-    model: str = CLAUDE_MODEL,
     effort: str = "medium",
     max_tokens: int = 16000,
 ) -> dict:
-    # fallbacks="default": if a safety classifier declines, the API re-runs the
-    # request on Anthropic's recommended fallback model instead of refusing.
-    response = await client.beta.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        system=system,
-        messages=[{"role": "user", "content": content}],
-        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-    )
-    if response.stop_reason == "refusal":
-        raise LLMRefusal(getattr(response.stop_details, "explanation", None) or "Claude declined this request")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("Claude hit max_tokens before finishing the JSON output")
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text)
+    # Looked up at call time so tests can patch api_llm.structured.
+    return await api_llm.structured(system=system, content=content, schema=schema, effort=effort, max_tokens=max_tokens)
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -129,9 +105,7 @@ def workflow_doc(wf: Workflow) -> str:
 
 __all__ = [
     "structured",
-    "LLMRefusal",
-    "CLAUDE_MODEL",
-    "CLAUDE_FAST_MODEL",
+    "ReasoningAPIError",
     "FRAME_SCHEMA",
     "WORKMAP_SCHEMA",
     "GRADE_SCHEMA",

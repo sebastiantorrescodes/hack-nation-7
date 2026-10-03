@@ -5,7 +5,7 @@ import { screenshot, snapshotPage } from "../lib/page";
 
 type Line = { t: number; who: "expert" | "agent" | "screen"; text: string; decision?: boolean };
 
-// Wait this long after the expert's last UI action before asking Claude what happened.
+// Wait this long after the expert's last UI action before asking the model what happened.
 const SETTLE_MS = 2500;
 
 async function ensureMicrophone(): Promise<boolean> {
@@ -119,7 +119,7 @@ export default function Capture({ workflowId, expertName, onRecordingChange, onB
       setSession(s);
       const { signed_url } = await api<{ signed_url: string }>("/api/voice/signed-url");
       await conversation.startSession({ signedUrl: signed_url, dynamicVariables: { expert_name: s.expert_name } });
-      // Baseline snapshot so Claude knows the starting screen.
+      // Baseline snapshot so the model knows the starting screen.
       pendingActions.current.push("started the session");
       analyze();
     } catch (e) {
@@ -137,7 +137,7 @@ export default function Capture({ workflowId, expertName, onRecordingChange, onB
 
   async function buildWorkMap() {
     if (!session) return;
-    setBusy("Claude is building the Work Map…");
+    setBusy("Building the Work Map…");
     setError("");
     try {
       const wm = await api<WorkMap>(`/api/capture/sessions/${session.id}/workmap`, { body: {} });

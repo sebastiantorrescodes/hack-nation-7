@@ -2,7 +2,7 @@
 
 AI Apprentice: a Chrome side panel that sits next to any web app. It captures an expert's judgment as a **Work Map** while they work, then uses that map to tutor newcomers on records they haven't seen.
 
-Nothing is tied to one industry. Each **workflow** (for example "Approving expense reports") defines the fields of the records it works on. Claude proposes them from the first recorded session, and the expert can correct them.
+Nothing is tied to one industry. Each **workflow** (for example "Approving expense reports") defines the fields of the records it works on. The model proposes them from the first recorded session, and the expert can correct them.
 
 ## Judge access requirement
 
@@ -159,8 +159,8 @@ backend/
     test_agent.py     # Tests the brain using a fake LLM and explicit expert actions.
 ```
 
-Call `await process_event(event, state, context)` to use the existing Claude
-`app.llm.structured` adapter, or supply `reason=your_async_callable` for an alternate
+Call `await process_event(event, state, context)` to use the OpenRouter
+`app.api_llm.structured` adapter, or supply `reason=your_async_callable` for an alternate
 reasoning provider or an offline test. The callable receives `system`, `content`,
 `schema`, `max_tokens`, and `effort` as keyword arguments and returns a decision
 dictionary. It is never the Qwen vision provider.
@@ -170,8 +170,8 @@ The six decisions are `ask_question`, `save_step`, `update_step`, `wait`,
 `question`, `step`, and `step_id`; unused arguments must be `null`. The schema
 rejects arbitrary tool names, invented confirmation flags, and mismatched arguments.
 The API schema omits unsupported string-length constraints, while the original
-Pydantic validation still enforces them locally, following the
-[Claude structured-output schema limitations](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations).
+Pydantic validation still enforces them locally, because providers' structured-output
+grammars do not reliably support them.
 
 The application must report a real pause with `CaptureContext(expert_paused=True)`.
 Unknown pause state, typing/reading (`expert_busy=True`), speech, or a pending answer
@@ -207,8 +207,8 @@ those are handled when the capture and voice loop is connected.
 Run `.venv/bin/python -m unittest discover -s tests -v` from `backend/`.
 All 37 offline tests pass: 18 agent tests, 11 normalization tests, and 8 vision tests.
 Agent tests need only Pydantic; the full suite also uses Pillow. A live reasoning
-call additionally needs `backend/requirements.txt` installed and the existing
-Claude adapter configured with credentials. No paid API call was made during these
+call additionally needs `backend/requirements.txt` installed and `OPENROUTER_API_KEY`
+set in `backend/.env`. No paid API call was made during these
 tests, so live model behavior is still unverified. Step 4 has not been started.
 
 ## How it fits together
@@ -216,12 +216,12 @@ tests, so live model behavior is still unverified. Step 4 has not been started.
 | Part | Folder | What it does |
 |---|---|---|
 | Chrome extension | [extension/](extension/) | Side panel UI (React + Vite) with an **Expert** tab and a **Trainee** tab. A content script runs in every frame of every page. It reports field changes and button clicks (never passwords) while an interview is recorded, and in tutor mode it holds Save/Submit clicks until the guardrail check passes. |
-| Backend | [backend/](backend/) | FastAPI on Supabase. Calls Claude to spot decision points, build the Work Map (and the workflow's record fields), read records off the page, grade predictions and write mastery reports. Gives the side panel a signed URL for the ElevenLabs agent. |
+| Backend | [backend/](backend/) | FastAPI on Supabase. Calls a free vision model on OpenRouter (Qwen by default) to spot decision points, build the Work Map (and the workflow's record fields), read records off the page, grade predictions and write mastery reports. Gives the side panel a signed URL for the ElevenLabs agent. |
 | Database | Supabase | Schema in [scripts/db.sql](scripts/db.sql); existing databases apply [scripts/migrations/](scripts/migrations/) in order. |
-| Voice | ElevenLabs Conversational AI | Interviews the expert. When Claude spots a decision point, the side panel sends the agent a contextual update with the "why" question to ask. |
+| Voice | ElevenLabs Conversational AI | Interviews the expert. When the model spots a decision point, the side panel sends the agent a contextual update with the "why" question to ask. |
 Flow:
-1. **Capture**: the expert picks a workflow and works in their app → the content script reports actions → the side panel snapshots the page (and optionally takes a screenshot) → Claude decides whether it was a decision point → the voice agent asks why.
-2. **Work Map**: Claude turns the timeline of actions and transcript into skill records, and adds any record fields they need to the workflow. Each skill has a trigger (conditions on record fields), an action, the expert's explanation and a guardrail. The expert approves the skills trainees should learn.
+1. **Capture**: the expert picks a workflow and works in their app → the content script reports actions → the side panel snapshots the page (and optionally takes a screenshot) → the model decides whether it was a decision point → the voice agent asks why.
+2. **Work Map**: the model turns the timeline of actions and transcript into skill records, and adds any record fields they need to the workflow. Each skill has a trigger (conditions on record fields), an action, the expert's explanation and a guardrail. The expert approves the skills trainees should learn.
 3. **Tutor**: the trainee picks a published workflow and a practice case (or the record open in the app) → triggers are matched in code → the learner predicts each decision → saving runs the guardrails in code → a mastery report at the end.
 
 A sample workflow ([backend/app/seed/demo_workflow.json](backend/app/seed/demo_workflow.json), expense report review) with practice cases is seeded on first start, so the tutor works before you've captured anything.
@@ -239,7 +239,7 @@ copy .env.example .env          # macOS/Linux: cp .env.example .env, then fill i
 uvicorn app.main:app --reload --port 8000
 ```
 
-`.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (the secret key), `ANTHROPIC_API_KEY` (or run `ant auth login`), `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`. Apply [scripts/db.sql](scripts/db.sql) in the Supabase SQL editor first.
+`.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (the secret key), `OPENROUTER_API_KEY` (see [docs/qwen-api-setup.md](docs/qwen-api-setup.md)), `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`. Apply [scripts/db.sql](scripts/db.sql) in the Supabase SQL editor first.
 
 ### 2. ElevenLabs agent
 
@@ -305,9 +305,10 @@ docker compose down -v
 ```
 # Qwen API agent
 
-The staged apprentice now uses free-only OpenRouter reasoning by default.
-See [setup and live test instructions](docs/qwen-api-setup.md). Existing web
-capture routes still use the legacy Claude flow until the agent is wired in.
+Every LLM call (capture, Work Map, tutor and the staged apprentice) uses free-only
+OpenRouter reasoning through `backend/app/api_llm.py`.
+See [setup and live test instructions](docs/qwen-api-setup.md). The capture routes
+still use their own frame-analysis prompt until the apprentice is wired in.
 
 Try the [Qwen + ElevenLabs voice demo](docs/voice-demo.md) for spoken questions,
-recorded answers, and evidence-backed proposals without the legacy Claude routes.
+recorded answers, and evidence-backed proposals using the staged apprentice.

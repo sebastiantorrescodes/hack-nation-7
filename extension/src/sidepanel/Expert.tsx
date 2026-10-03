@@ -82,7 +82,7 @@ export default function Expert({ active }: { active: boolean }) {
               What the work is (optional)
               <textarea
                 rows={2}
-                placeholder="A sentence or two. Helps Claude understand what it's watching."
+                placeholder="A sentence or two. Helps the AI understand what it's watching."
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
               />
