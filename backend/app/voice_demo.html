@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Apprentice · Voice demo</title>
+<style>
+body{font:17px system-ui;background:#f3f5f8;color:#172336;max-width:780px;margin:50px auto;padding:20px}
+section{background:white;padding:28px;border-radius:16px;margin:18px 0}button,input{font:inherit;padding:12px;margin:5px;border-radius:8px;border:1px solid #bac4d1}
+button{cursor:pointer;background:#183e76;color:white}button:disabled{opacity:.45;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}#status{color:#75400a}audio{width:100%}h1{margin:0}
+</style>
+<h1>AI Apprentice</h1><p>Qwen asks. ElevenLabs speaks and listens. You supply the reasoning.</p>
+<section><b>Demo event</b><p>Review status changed from “Pending” to “Needs review”. This is a synthetic event, not a captured screen.</p>
+<input id="expert" placeholder="Your name" value="Demo expert"><button id="start">Start demo</button>
+<p id="status" role="status">Ready. Recording starts only when you press Record answer.</p></section>
+<section><h2>Expert question</h2><p id="question">Start the demo to receive a question.</p>
+<button id="speak" disabled>Speak question</button><audio id="player" controls></audio>
+<button id="record" disabled>Record answer</button><button id="stop" disabled>Stop and send</button>
+<button id="retry" disabled>Retry reasoning</button><h3>Your transcript</h3><p id="transcript">No answer yet.</p></section>
+<section><h2>Proposed workflow knowledge</h2><p>Proposals still require expert review. This demo does not approve or publish knowledge.</p><pre id="knowledge">No steps proposed.</pre></section>
+<script>
+const el=id=>document.getElementById(id);
+let session=null,state=null,recorder=null,stream=null,timer=null,audioURL=null,inFlight=false;
+const answered=q=>state.answers.some(a=>a.question_id===q.id);
+const pending=()=>state?.questions.find(q=>!answered(q));
+function render(){const q=pending();el('question').textContent=q?.text||(session?'No pending question. Use Retry reasoning to continue.':'Start the demo to receive a question.');
+ el('knowledge').textContent=state?.steps.length?JSON.stringify(state.steps,null,2):'No steps proposed.';
+ for(const id of ['speak','record'])el(id).disabled=!q||inFlight||!!recorder||!el('player').paused;
+ el('retry').disabled=!session||inFlight||!!recorder;el('start').disabled=inFlight||!!recorder;
+ el('stop').disabled=!recorder||inFlight;}
+async function request(path,options={}){const response=await fetch(path,options);if(!response.ok){let detail='Request failed';try{detail=(await response.json()).detail||detail}catch{}throw Error(detail)}return response;}
+async function run(fn){inFlight=true;render();try{await fn()}catch(e){el('status').textContent=e.message}finally{inFlight=false;render()}}
+el('start').onclick=()=>run(async()=>{el('player').pause();el('status').textContent='Qwen is reviewing the event…';
+ const data=await(await request('/api/demo/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expert_name:el('expert').value||'Demo expert'})})).json();
+ session=data.id;state=data.state;el('transcript').textContent='No answer yet.';el('status').textContent='Question ready. Press Speak question, then Record answer.';});
+el('speak').onclick=()=>run(async()=>{const q=pending();el('status').textContent='Generating question audio…';
+ const blob=await(await request(`/api/demo/sessions/${session}/questions/${q.id}/audio`)).blob();if(audioURL)URL.revokeObjectURL(audioURL);
+ audioURL=URL.createObjectURL(blob);el('player').src=audioURL;await el('player').play();el('status').textContent='Listen to the question, then record your answer.';});
+el('player').onended=render;el('player').onpause=render;el('player').onplay=render;
+el('record').onclick=()=>run(async()=>{if(!window.MediaRecorder)throw Error('This browser does not support recording. Use Chrome.');
+ stream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];const q=pending();
+ recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ recorder.onstop=()=>{clearTimeout(timer);stream.getTracks().forEach(t=>t.stop());stream=null;const type=recorder.mimeType;recorder=null;
+ run(async()=>{el('status').textContent='Transcribing your answer, then asking Qwen…';const blob=new Blob(chunks,{type});
+ const data=await(await request(`/api/demo/sessions/${session}/questions/${q.id}/answer`,{method:'POST',headers:{'Content-Type':type},body:blob})).json();
+ state=data.state;el('transcript').textContent=data.answer.text;el('status').textContent=data.error||'Answer recorded. Review the proposed knowledge or answer the next question.';});};
+ recorder.start();timer=setTimeout(()=>recorder?.stop(),45000);el('status').textContent='Recording… press Stop and send when finished (45 seconds maximum).';});
+el('stop').onclick=()=>{if(recorder?.state==='recording')recorder.stop()};
+el('retry').onclick=()=>run(async()=>{el('status').textContent='Qwen is reviewing the evidence…';const data=await(await request(`/api/demo/sessions/${session}/reason`,{method:'POST'})).json();state=data.state;el('status').textContent='Decision received.';});
+window.addEventListener('beforeunload',()=>stream?.getTracks().forEach(t=>t.stop()));
+</script>
+</html>
