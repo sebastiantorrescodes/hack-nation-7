@@ -1,17 +1,15 @@
 import { useState } from "react";
-import Capture from "./Capture";
-import Tutor from "./Tutor";
-import WorkMapView from "./WorkMapView";
+import Expert from "./Expert";
+import Trainee from "./Trainee";
 
 const TABS = [
-  { id: "capture", label: "Capture" },
-  { id: "workmap", label: "Work Map" },
-  { id: "tutor", label: "Tutor" },
+  { id: "expert", label: "Expert" },
+  { id: "trainee", label: "Trainee" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>("capture");
+  const [tab, setTab] = useState<TabId>("expert");
   return (
     <div className="app">
       <header>
@@ -24,16 +22,13 @@ export default function App() {
           ))}
         </nav>
       </header>
-      {/* Keep every tab mounted so a running interview or tutor session survives tab switches. */}
+      {/* Keep both tabs mounted so a running interview or tutor session survives tab switches. */}
       <main>
-        <div hidden={tab !== "capture"}>
-          <Capture />
+        <div hidden={tab !== "expert"}>
+          <Expert active={tab === "expert"} />
         </div>
-        <div hidden={tab !== "workmap"}>
-          <WorkMapView active={tab === "workmap"} />
-        </div>
-        <div hidden={tab !== "tutor"}>
-          <Tutor active={tab === "tutor"} />
+        <div hidden={tab !== "trainee"}>
+          <Trainee active={tab === "trainee"} />
         </div>
       </main>
     </div>

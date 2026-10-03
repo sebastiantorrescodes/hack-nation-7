@@ -60,14 +60,30 @@ class Skill(BaseModel):
     expert_explanation: str  # the expert's own words, lightly cleaned
     guardrail: Guardrail
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    # Only approved skills are published to trainees.
+    status: Literal["draft", "approved", "rejected"] = "draft"
+    expert_name: str = ""
 
 
 class WorkMap(BaseModel):
+    """The skills captured in one expert session."""
     id: str
     session_id: str
+    workflow_id: str = ""
     expert_name: str
     summary: str
+    recorded_at: float = 0
     skills: list[Skill]
+
+
+class Workflow(BaseModel):
+    id: str
+    name: str
+    app: str
+    approved_skills: int = 0
+    draft_skills: int = 0
+    sessions: int = 0  # capture sessions with a Work Map
+    mastered_skills: int | None = None  # set when listed for a trainee
 
 
 # --- Capture ----------------------------------------------------------------
@@ -107,7 +123,7 @@ class Attempt(BaseModel):
 class TutorSession(BaseModel):
     id: str
     learner_name: str
-    workmap_id: str
+    workflow_id: str  # trainees practice a workflow's approved skills
     claim_id: str  # seed claim id, or "live" when read from the OpenEMR page
     original_claim: dict  # the claim as it arrived; triggers are evaluated against this
     matched_skill_ids: list[str]

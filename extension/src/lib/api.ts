@@ -22,8 +22,28 @@ export type Skill = {
   expert_explanation: string;
   guardrail: { description: string; must: Condition[] };
   evidence: { t: number; quote: string }[];
+  status: SkillStatus;
+  expert_name: string;
 };
-export type WorkMap = { id: string; session_id: string; expert_name: string; summary: string; skills: Skill[] };
+export type SkillStatus = "draft" | "approved" | "rejected";
+export type WorkMap = {
+  id: string;
+  session_id: string;
+  workflow_id: string;
+  expert_name: string;
+  summary: string;
+  recorded_at: number;
+  skills: Skill[];
+};
+export type Workflow = {
+  id: string;
+  name: string;
+  app: string;
+  approved_skills: number;
+  draft_skills: number;
+  sessions: number;
+  mastered_skills: number | null;
+};
 export type ScreenEvent = {
   t: number;
   kind: string;

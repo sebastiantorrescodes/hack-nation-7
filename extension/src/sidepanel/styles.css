@@ -72,6 +72,19 @@ code { display: inline-block; margin: 0 4px 4px 0; padding: 1px 6px; border-radi
 .pill.mastered { background: var(--ok-bg); color: var(--ok); }
 .pill.practicing { background: var(--decision); }
 .pill.not_yet { background: var(--bad-bg); color: var(--bad); }
+.pill.draft { background: var(--decision); }
+.pill.approved { background: var(--ok-bg); color: var(--ok); }
+.pill.rejected { background: var(--bad-bg); color: var(--bad); }
+
+.title { margin: 0; font-size: 16px; }
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+button.card.link { text-align: left; font: inherit; color: inherit; gap: 4px; }
+button.card.link:hover:not(:disabled) { border-color: var(--accent); }
+.progress { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.progress > div { height: 100%; background: var(--ok); }
+details.workmap { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+details.workmap > summary { cursor: pointer; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+details.workmap[open] > :not(summary) { margin-top: 8px; }
 ul.report { padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 
 ol.log { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }

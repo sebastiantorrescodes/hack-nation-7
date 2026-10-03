@@ -1,8 +1,6 @@
 """Expert capture: screen frames + voice transcript -> Work Map."""
 
 import json
-import time
-import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -14,8 +12,8 @@ from ..models import CaptureSession, ScreenEvent, Skill, TranscriptTurn, WorkMap
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 
 
-def _get(session_id: str) -> CaptureSession:
-    s = store.load("sessions", session_id, CaptureSession)
+async def _get(session_id: str) -> CaptureSession:
+    s = await store.get_capture_session(session_id)
     if not s:
         raise HTTPException(404, "capture session not found")
     return s
@@ -23,30 +21,31 @@ def _get(session_id: str) -> CaptureSession:
 
 class StartBody(BaseModel):
     expert_name: str
+    workflow_id: str
 
 
 @router.post("/sessions")
-def start(body: StartBody) -> CaptureSession:
-    s = CaptureSession(id=uuid.uuid4().hex[:12], expert_name=body.expert_name, started_at=time.time())
-    store.save("sessions", s)
-    return s
+async def start(body: StartBody) -> CaptureSession:
+    wf = await store.get_workflow(body.workflow_id)
+    if not wf:
+        raise HTTPException(404, "workflow not found")
+    return await store.create_capture_session(body.expert_name, wf.id)
 
 
 @router.get("/sessions")
-def list_sessions() -> list[CaptureSession]:
-    return store.list_all("sessions", CaptureSession)
+async def list_sessions() -> list[CaptureSession]:
+    return await store.list_capture_sessions()
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: str) -> CaptureSession:
-    return _get(session_id)
+async def get_session(session_id: str) -> CaptureSession:
+    return await _get(session_id)
 
 
 @router.post("/sessions/{session_id}/transcript")
-def add_turn(session_id: str, turn: TranscriptTurn) -> dict:
-    s = _get(session_id)
-    s.transcript.append(turn)
-    store.save("sessions", s)
+async def add_turn(session_id: str, turn: TranscriptTurn) -> dict:
+    s = await _get(session_id)
+    await store.add_turn(s.id, turn)
     return {"ok": True}
 
 
@@ -83,7 +82,7 @@ For each update return:
 
 @router.post("/sessions/{session_id}/frames")
 async def analyze_frame(session_id: str, body: FrameBody) -> ScreenEvent | None:
-    s = _get(session_id)
+    s = await _get(session_id)
     recent = "\n".join(f"[{t.role}] {t.text}" for t in s.transcript[-6:]) or "(nothing yet)"
     actions = "\n".join(f"- {a}" for a in body.actions) or "(none recorded)"
     content: list[dict] = [
@@ -107,9 +106,6 @@ async def analyze_frame(session_id: str, body: FrameBody) -> ScreenEvent | None:
         content=content,
         schema=FRAME_SCHEMA,
     )
-    # Reload: transcript turns may have been written while Claude was thinking.
-    s = _get(session_id)
-    s.last_screen_summary = result["screen_summary"]
     event = None
     if result["changed"] and result["event_kind"]:
         try:
@@ -124,8 +120,7 @@ async def analyze_frame(session_id: str, body: FrameBody) -> ScreenEvent | None:
             is_decision_point=result["is_decision_point"],
             ask_why=result["ask_why"] or None,
         )
-        s.events.append(event)
-    store.save("sessions", s)
+    await store.record_frame(s.id, result["screen_summary"], event)
     return event
 
 
@@ -154,7 +149,7 @@ Each skill has:
 
 @router.post("/sessions/{session_id}/workmap")
 async def build_workmap(session_id: str) -> WorkMap:
-    s = _get(session_id)
+    s = await _get(session_id)
     if not s.transcript and not s.events:
         raise HTTPException(400, "nothing captured yet")
     timeline = sorted(
@@ -168,14 +163,6 @@ async def build_workmap(session_id: str) -> WorkMap:
         content=f"Expert: {s.expert_name}\n\nTimeline (JSON):\n{json.dumps(timeline, indent=1)}",
         schema=WORKMAP_SCHEMA,
     )
-    wm = WorkMap(
-        id=uuid.uuid4().hex[:12],
-        session_id=s.id,
-        expert_name=s.expert_name,
-        summary=result["summary"],
-        skills=[Skill(id=f"s{i + 1}", **sk) for i, sk in enumerate(result["skills"])],
-    )
-    store.save("workmaps", wm)
-    s.workmap_id = wm.id
-    store.save("sessions", s)
-    return wm
+    # Skill ids are assigned by the database.
+    skills = [Skill(id="", **sk) for sk in result["skills"]]
+    return await store.create_workmap(s.id, result["summary"], skills)

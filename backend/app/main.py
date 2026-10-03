@@ -1,18 +1,22 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import store
-from .config import FRONTEND_ORIGIN, SEED_DIR
+from .config import FRONTEND_ORIGIN
 from .llm import LLMRefusal
-from .models import WorkMap
-from .routes import capture, tutor, voice, workmaps
+from .routes import capture, tutor, voice, workflows, workmaps
 
-app = FastAPI(title="Billing Apprentice")
 
-# Seed a demo Work Map so the tutor can be tried before any capture session exists.
-if not store.load("workmaps", "demo", WorkMap):
-    store.save("workmaps", WorkMap.model_validate_json((SEED_DIR / "demo_workmap.json").read_text(encoding="utf-8")))
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await store.init()
+    yield
+
+
+app = FastAPI(title="Billing Apprentice", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +34,7 @@ async def refusal_handler(_: Request, exc: LLMRefusal):
 
 
 app.include_router(voice.router)
+app.include_router(workflows.router)
 app.include_router(capture.router)
 app.include_router(workmaps.router)
 app.include_router(tutor.router)

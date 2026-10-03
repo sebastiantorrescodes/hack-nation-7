@@ -1,7 +1,6 @@
-"""Tutor: guide a new hire through an unseen claim using the Work Map."""
+"""Tutor: guide a new hire through an unseen claim using a workflow's published Work Map (its approved skills)."""
 
 import json
-import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -9,23 +8,20 @@ from pydantic import BaseModel
 from .. import rules, store
 from ..extract import extract_claim
 from ..llm import GRADE_SCHEMA, REPORT_SCHEMA, structured
-from ..models import Attempt, Condition, Skill, TutorSession, WorkMap
+from ..models import Condition, Skill, TutorSession
 
 router = APIRouter(prefix="/api/tutor", tags=["tutor"])
 
 
-def _session(session_id: str) -> tuple[TutorSession, WorkMap, dict]:
-    ts = store.load("tutor", session_id, TutorSession)
+async def _session(session_id: str) -> tuple[TutorSession, list[Skill], dict]:
+    ts = await store.get_tutor_session(session_id)
     if not ts:
         raise HTTPException(404, "tutor session not found")
-    wm = store.load("workmaps", ts.workmap_id, WorkMap)
-    if not wm:
-        raise HTTPException(404, "work map missing")
-    return ts, wm, ts.original_claim
+    return ts, await store.published_skills(ts.workflow_id), ts.original_claim
 
 
-def _skill(wm: WorkMap, skill_id: str) -> Skill:
-    sk = next((s for s in wm.skills if s.id == skill_id), None)
+def _skill(skills: list[Skill], skill_id: str) -> Skill:
+    sk = next((s for s in skills if s.id == skill_id), None)
     if not sk:
         raise HTTPException(404, "skill not found")
     return sk
@@ -42,7 +38,7 @@ def claims() -> list[dict]:
 
 class StartBody(BaseModel):
     learner_name: str
-    workmap_id: str
+    workflow_id: str
     # Either a seed practice claim, or a snapshot of the live OpenEMR page.
     claim_id: str | None = None
     page: str | None = None
@@ -50,9 +46,12 @@ class StartBody(BaseModel):
 
 @router.post("/sessions")
 async def start(body: StartBody) -> dict:
-    wm = store.load("workmaps", body.workmap_id, WorkMap)
-    if not wm:
-        raise HTTPException(404, "work map not found")
+    wf = await store.get_workflow(body.workflow_id)
+    if not wf:
+        raise HTTPException(404, "workflow not found")
+    skills = await store.published_skills(wf.id)
+    if not skills:
+        raise HTTPException(400, "this workflow has no approved skills yet")
     if body.claim_id:
         claim = store.get_claim(body.claim_id)
         if not claim:
@@ -61,16 +60,8 @@ async def start(body: StartBody) -> dict:
         claim = {"id": "live", "label": "Claim open in OpenEMR", **await extract_claim(body.page)}
     else:
         raise HTTPException(400, "send claim_id or page")
-    matched = rules.triggered_skills(wm.skills, claim)
-    ts = TutorSession(
-        id=uuid.uuid4().hex[:12],
-        learner_name=body.learner_name,
-        workmap_id=wm.id,
-        claim_id=claim["id"],
-        original_claim=claim,
-        matched_skill_ids=[s.id for s in matched],
-    )
-    store.save("tutor", ts)
+    matched = rules.triggered_skills(skills, claim)
+    ts = await store.create_tutor_session(body.learner_name, wf.id, claim, [s.id for s in matched])
     # Only reveal *that* a decision point exists, not the answer: the learner predicts first.
     return {
         "session": ts,
@@ -94,8 +85,8 @@ in the expert's words, and add one nuance they might have missed."""
 
 @router.post("/sessions/{session_id}/predict")
 async def predict(session_id: str, body: PredictBody) -> dict:
-    ts, wm, claim = _session(session_id)
-    sk = _skill(wm, body.skill_id)
+    ts, skills, claim = await _session(session_id)
+    sk = _skill(skills, body.skill_id)
     result = await structured(
         effort="low",
         max_tokens=4000,
@@ -109,9 +100,8 @@ async def predict(session_id: str, body: PredictBody) -> dict:
         ),
         schema=GRADE_SCHEMA,
     )
-    ts.attempts.append(Attempt(skill_id=sk.id, kind="prediction", correct=result["correct"], detail=body.prediction))
-    store.save("tutor", ts)
-    return {**result, "expert_action": sk.action, "expert_explanation": sk.expert_explanation, "expert_name": wm.expert_name}
+    await store.record_prediction(ts, sk.id, body.prediction, result["correct"], result["feedback"])
+    return {**result, "expert_action": sk.action, "expert_explanation": sk.expert_explanation, "expert_name": sk.expert_name}
 
 
 class CheckBody(BaseModel):
@@ -123,19 +113,15 @@ class CheckBody(BaseModel):
 @router.post("/sessions/{session_id}/check")
 async def check_before_save(session_id: str, body: CheckBody) -> dict:
     """Runs every triggered guardrail against the claim about to be saved. Blocks the save on any violation."""
-    ts, wm, original = _session(session_id)
+    ts, skills, original = await _session(session_id)
     if body.claim is not None:
         edited = body.claim
     elif body.page:
         edited = await extract_claim(body.page)
     else:
         raise HTTPException(400, "send claim or page")
-    violations = rules.guardrail_violations(wm.skills, original, edited)
-    failed_ids = {sk.id for sk, _ in violations}
-    for sid in ts.matched_skill_ids:
-        ts.attempts.append(Attempt(skill_id=sid, kind="save_check", correct=sid not in failed_ids, detail=""))
-    ts.saved = not violations
-    store.save("tutor", ts)
+    violations = rules.guardrail_violations(skills, original, edited)
+    await store.record_save_check(ts, {sk.id: sk.guardrail.description for sk, _ in violations})
     return {
         "ok": not violations,
         "claim_seen": edited,
@@ -146,7 +132,7 @@ async def check_before_save(session_id: str, body: CheckBody) -> dict:
                 "guardrail": sk.guardrail.description,
                 "failed": [_fmt(c) for c in failed],
                 "expert_explanation": sk.expert_explanation,
-                "expert_name": wm.expert_name,
+                "expert_name": sk.expert_name,
             }
             for sk, failed in violations
         ],
@@ -161,8 +147,8 @@ honest sentence. practice_next: 1-3 concrete things to practice, phrased for the
 
 @router.get("/sessions/{session_id}/report")
 async def report(session_id: str) -> dict:
-    ts, wm, _ = _session(session_id)
-    skills = [s for s in wm.skills if s.id in ts.matched_skill_ids]
+    ts, published, _ = await _session(session_id)
+    skills = [s for s in published if s.id in ts.matched_skill_ids]
     if not skills:
         return {"headline": "This claim had no decision points from the Work Map.", "skills": [], "practice_next": []}
     log = [a.model_dump() for a in ts.attempts]

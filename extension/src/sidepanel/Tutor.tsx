@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type WorkMap } from "../lib/api";
+import { api, type Workflow } from "../lib/api";
 import { snapshotPage } from "../lib/page";
 
 type Claim = Record<string, unknown> & { id: string; label?: string };
@@ -22,10 +22,14 @@ function violationMessage(v: Violation[]) {
   return v.map((x) => `${x.guardrail}. ${x.expert_name}: “${x.expert_explanation}”`).join("\n\n");
 }
 
-export default function Tutor({ active }: { active: boolean }) {
-  const [learner, setLearner] = useState("");
-  const [maps, setMaps] = useState<WorkMap[]>([]);
-  const [workmapId, setWorkmapId] = useState("demo");
+type Props = {
+  workflow: Workflow;
+  learner: string;
+  /** True while a claim is being worked, so the parent can keep the learner from navigating away mid-claim. */
+  onSessionChange: (inSession: boolean) => void;
+};
+
+export default function Tutor({ workflow, learner, onSessionChange }: Props) {
   const [practiceClaims, setPracticeClaims] = useState<Claim[]>([]);
   const [source, setSource] = useState<string>("live"); // "live" or a practice claim id
 
@@ -45,10 +49,12 @@ export default function Tutor({ active }: { active: boolean }) {
   const isLive = claim?.id === "live";
 
   useEffect(() => {
-    if (!active) return;
-    api<WorkMap[]>("/api/workmaps").then(setMaps).catch((e) => setError(String(e)));
     api<Claim[]>("/api/tutor/claims").then(setPracticeClaims).catch(() => {});
-  }, [active]);
+    // Leaving the tutor: stop holding Save clicks in OpenEMR.
+    return () => void chrome.storage.local.set({ guardSave: false });
+  }, []);
+
+  useEffect(() => onSessionChange(!!sessionId && !report), [sessionId, report, onSessionChange]);
 
   // The content script in OpenEMR asks us before letting a Save click through.
   useEffect(() => {
@@ -86,8 +92,8 @@ export default function Tutor({ active }: { active: boolean }) {
     try {
       const body =
         source === "live"
-          ? { learner_name: learner || "Learner", workmap_id: workmapId, page: await snapshotPage() }
-          : { learner_name: learner || "Learner", workmap_id: workmapId, claim_id: source };
+          ? { learner_name: learner, workflow_id: workflow.id, page: await snapshotPage() }
+          : { learner_name: learner, workflow_id: workflow.id, claim_id: source };
       const res = await api<{ session: { id: string }; claim: Claim; decision_points: DecisionPoint[] }>("/api/tutor/sessions", { body });
       setSessionId(res.session.id);
       setClaim(res.claim);
@@ -148,17 +154,6 @@ export default function Tutor({ active }: { active: boolean }) {
       {!sessionId && (
         <>
           <p className="muted">Work a claim you haven't seen. Predict each decision, then save. The tutor checks the claim before it saves.</p>
-          <input placeholder="Your name" value={learner} onChange={(e) => setLearner(e.target.value)} />
-          <label>
-            Work Map
-            <select value={workmapId} onChange={(e) => setWorkmapId(e.target.value)}>
-              {maps.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.expert_name} · {m.skills.length} skills
-                </option>
-              ))}
-            </select>
-          </label>
           <label>
             Claim
             <select value={source} onChange={(e) => setSource(e.target.value)}>

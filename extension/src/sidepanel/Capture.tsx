@@ -20,8 +20,15 @@ async function ensureMicrophone(): Promise<boolean> {
   }
 }
 
-export default function Capture() {
-  const [expert, setExpert] = useState("");
+type Props = {
+  workflowId: string;
+  expertName: string;
+  /** Lets the parent stop navigation away while recording (unmounting would end the interview). */
+  onRecordingChange: (recording: boolean) => void;
+  onBuilt: (wm: WorkMap) => void;
+};
+
+export default function Capture({ workflowId, expertName, onRecordingChange, onBuilt }: Props) {
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [withScreenshots, setWithScreenshots] = useState(false);
@@ -107,7 +114,7 @@ export default function Capture() {
     }
     setBusy("Starting…");
     try {
-      const s = await api<CaptureSession>("/api/capture/sessions", { body: { expert_name: expert || "Expert" } });
+      const s = await api<CaptureSession>("/api/capture/sessions", { body: { expert_name: expertName, workflow_id: workflowId } });
       sessionRef.current = s;
       setSession(s);
       const { signed_url } = await api<{ signed_url: string }>("/api/voice/signed-url");
@@ -133,7 +140,9 @@ export default function Capture() {
     setBusy("Claude is building the Work Map…");
     setError("");
     try {
-      setWorkmap(await api<WorkMap>(`/api/capture/sessions/${session.id}/workmap`, { body: {} }));
+      const wm = await api<WorkMap>(`/api/capture/sessions/${session.id}/workmap`, { body: {} });
+      setWorkmap(wm);
+      onBuilt(wm);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -142,20 +151,18 @@ export default function Capture() {
   }
 
   const live = conversation.status === "connected";
+  useEffect(() => onRecordingChange(live), [live, onRecordingChange]);
 
   return (
     <section>
       <p className="muted">
-        The expert works claims in OpenEMR as usual. The voice agent asks why at each decision point.
+        Work claims in OpenEMR as usual. The voice agent asks why at each decision point.
       </p>
 
       {!live && (
-        <div className="row">
-          <input placeholder="Expert's name" value={expert} onChange={(e) => setExpert(e.target.value)} />
-          <button className="primary" onClick={start} disabled={!!busy}>
-            Start interview
-          </button>
-        </div>
+        <button className="primary" onClick={start} disabled={!!busy || !expertName}>
+          Start interview
+        </button>
       )}
       {live && (
         <div className="row">
@@ -188,7 +195,7 @@ export default function Capture() {
       )}
       {workmap && (
         <p className="ok">
-          Work Map ready with {workmap.skills.length} skills. Open the Work Map tab to review it.
+          Work Map ready with {workmap.skills.length} skills. Review them below and approve the ones trainees should learn.
         </p>
       )}
     </section>

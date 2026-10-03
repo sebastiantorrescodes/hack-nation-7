@@ -29,6 +29,11 @@ create table sessions (
   status        text not null default 'live' check (status in ('live', 'processing', 'done')),
   recording_url text,                       -- Supabase Storage path to screen video
   el_conversation_id text,                  -- ElevenLabs conversation id (to pull transcript)
+  summary       text,                       -- capture: Work Map summary (Work Map = skills with source_session = this)
+  screen_summary text,                      -- capture: latest screen description, context for the next frame
+  capture_session_id uuid references sessions(id), -- training: Work Map being practiced
+  claim         jsonb,                      -- training: the claim as it arrived; triggers are evaluated on this
+  matched_skill_ids uuid[] default '{}',    -- training: skills whose trigger matched the claim
   started_at    timestamptz default now(),
   ended_at      timestamptz
 );
@@ -70,6 +75,7 @@ create table skills (
   name           text not null,             -- "ER claims from out-of-network providers"
   trigger        jsonb not null,            -- machine-checkable conditions, see example below
   action         text not null,             -- what to do
+  action_kind    text,                      -- add_modifier | remove_modifier | change_code | hold_claim | query_physician | submit | other
   reason_quote   text,                      -- expert's own words
   guardrail      jsonb,                     -- condition that must block save
   guardrail_msg  text,                      -- "Hold on — Maria would stop here. Why?"
@@ -91,7 +97,8 @@ create index on skills (workflow_id, status);
 create table skill_evidence (
   skill_id    uuid references skills(id) on delete cascade,
   event_id    bigint references events(id) on delete cascade,
-  segment_id  bigint references transcript_segments(id) on delete cascade
+  segment_id  bigint references transcript_segments(id) on delete cascade,
+  quote       text                          -- short excerpt of the segment that supports the skill
 );
 
 -- ───────────── 3. TEACH (trainee) ─────────────
