@@ -19,5 +19,5 @@ async def signed_url():
             headers={"xi-api-key": ELEVENLABS_API_KEY},
         )
     if r.status_code != 200:
-        raise HTTPException(502, f"ElevenLabs error {r.status_code}: {r.text}")
+        raise HTTPException(502, f"ElevenLabs HTTP {r.status_code}. Check the agent and endpoint permissions.")
     return {"signed_url": r.json()["signed_url"]}

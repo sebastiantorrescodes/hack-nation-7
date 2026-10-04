@@ -1,11 +1,13 @@
 {
   "name": "billing-apprentice-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.4",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "tsc --noEmit && vite build"
+    "build": "tsc --noEmit && vite build",
+    "test:voice": "npm run build && node --test tests/voice-assets.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@elevenlabs/react": "^0.8.0",

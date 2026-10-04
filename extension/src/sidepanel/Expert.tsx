@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, type Skill, type SkillStatus, type Workflow, type WorkMap } from "../lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, apiAudio, type Skill, type SkillStatus, type Workflow, type WorkMap } from "../lib/api";
 import { useStored } from "../lib/useStored";
 import Capture from "./Capture";
 import SkillCard from "./SkillCard";
@@ -124,7 +124,7 @@ function WorkflowDetail({
     setBusy(true);
     setError("");
     try {
-      for (const s of skills) await api(`/api/skills/${s.id}`, { method: "PATCH", body: { status } });
+      for (const s of skills) await api(`/api/skills/${s.id}`, { method: "PATCH", body: { status, expected_version: s.version } });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -155,6 +155,7 @@ function WorkflowDetail({
         {!expertName && <p className="muted">Enter your name above to record.</p>}
         <Capture
           workflowId={workflow.id}
+          workflow={workflow}
           expertName={expertName}
           onRecordingChange={setRecording}
           onBuilt={() => {
@@ -179,6 +180,8 @@ function WorkflowDetail({
               {drafts.length > 0 && <span className="pill draft">{drafts.length} to review</span>}
             </summary>
             <p className="muted">{m.summary}</p>
+            {!drafts.length && m.revision > 0 && <TeachBackReview map={m} onConfirmed={() => {load(); onChanged();}} />}
+
             {drafts.length > 1 && (
               <button className="primary" onClick={() => review(drafts, "approved")} disabled={busy}>
                 Approve all {drafts.length}
@@ -211,4 +214,41 @@ function WorkflowDetail({
       })}
     </>
   );
+}
+
+
+function TeachBackReview({map,onConfirmed}: {map: WorkMap; onConfirmed: () => void}) {
+  const [text,setText] = useState("");
+  const [reviewed,setReviewed] = useState(false), [busy,setBusy] = useState(false), [error,setError] = useState("");
+  const audio = useRef<HTMLAudioElement | null>(null), url = useRef<string | null>(null);
+  useEffect(() => () => {audio.current?.pause(); if (url.current) URL.revokeObjectURL(url.current);},[]);
+  if (map.teach_back_confirmed) return <p className="ok">Teach-back confirmed for revision {map.revision}.</p>;
+  async function present(voice: boolean) {
+    setBusy(true); setError("");
+    try {
+      const result = await api<{text: string; revision: number}>(`/api/capture/sessions/${map.session_id}/teach-back`);
+      if (result.revision !== map.revision) throw new Error("The Work Map changed. Refresh the reviewed revision.");
+      setText(result.text);
+      if (voice) {
+        audio.current?.pause(); if (url.current) URL.revokeObjectURL(url.current);
+        url.current = URL.createObjectURL(await apiAudio(`/api/capture/sessions/${map.session_id}/teach-back/audio?revision=${map.revision}`));
+        audio.current = new Audio(url.current); await audio.current.play();
+      }
+    } catch(e) {setError(String(e));} finally {setBusy(false);}
+  }
+  return <section>
+    <div className="row"><button disabled={busy} onClick={() => void present(false)}>Review teach-back</button><button disabled={busy} onClick={() => void present(true)}>Hear teach-back</button></div>
+    {text && <><p>{text}</p><label className="check"><input type="checkbox" checked={reviewed} onChange={e => setReviewed(e.target.checked)} />This teach-back reflects my reasoning and guardrails.</label>
+      <button disabled={busy || !reviewed} onClick={async () => {
+        setBusy(true);setError("");
+        try {
+          await api(`/api/capture/sessions/${map.session_id}/debrief`,{body:{}});
+          const body={expected_revision:map.revision};
+          await api(`/api/capture/sessions/${map.session_id}/teach-back/presented`,{body});
+          await api(`/api/capture/sessions/${map.session_id}/teach-back`,{body});
+          onConfirmed();
+        } catch(e) {setError(String(e));} finally {setBusy(false);}
+      }}>Confirm teach-back and finish</button></>}
+    {error && <p className="error">{error}</p>}
+  </section>;
 }

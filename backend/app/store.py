@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 
 from supabase import AsyncClient, acreate_client
 
+from .access import authorize_owner, caller
+from .knowledge import draft_payload
 from .config import SEED_DIR, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
 from .models import (
     Action,
@@ -78,6 +80,8 @@ def _name(row: dict) -> str:
 
 
 async def _user_id(name: str, role: str) -> str:
+    if not caller.get().local:
+        return caller.get().user_id
     rows = (await _t("users").select("id").eq("name", name).eq("role", role).limit(1).execute()).data
     if rows:
         return rows[0]["id"]
@@ -136,7 +140,7 @@ async def update_workflow(
         changes["fields"] = [f.model_dump() for f in fields]
     wid = _id(workflow_id)
     if wid and changes:
-        await _t("workflows").update(changes).eq("id", wid).execute()
+        await _db.rpc("update_workflow_atomic", {"p_workflow": wid, "p_changes": changes}).execute()
     return await get_workflow(workflow_id)
 
 
@@ -145,7 +149,7 @@ async def list_published_workflows(learner_name: str | None) -> list[Workflow]:
     workflows = [w for w in await list_workflows() if w.approved_skills]
     if learner_name:
         mastered: set[str] = set()
-        users = (await _t("users").select("id").eq("name", learner_name).eq("role", "trainee").execute()).data
+        users = [{"id": caller.get().user_id}] if not caller.get().local else (await _t("users").select("id").eq("name", learner_name).eq("role", "trainee").execute()).data
         if users:
             rows = (await _t("mastery").select("skill_id").eq("trainee_id", users[0]["id"]).eq("level", "mastered").execute()).data
             mastered = {r["skill_id"] for r in rows}
@@ -193,17 +197,27 @@ def _capture(row: dict) -> CaptureSession:
         workflow_id=row["workflow_id"],
         expert_name=_name(row),
         started_at=_epoch(row["started_at"]),
-        transcript=[TranscriptTurn(t=(r["t_start_ms"] or 0) / 1000, role=r["speaker"], text=r["text"]) for r in segments],
-        events=[ScreenEvent(t=(r["t_offset_ms"] or 0) / 1000, kind=r["type"], **r["payload"]) for r in events],
+        transcript=[TranscriptTurn(client_id=r.get("client_id"), segment_id=r["id"], question_id=r.get("question_id"), answer_id=r.get("answer_id"), t=(r["t_start_ms"] or 0) / 1000, role=r["speaker"], text=r["text"]) for r in segments],
+        events=[ScreenEvent(event_id=r["id"], client_event_id=r.get("client_id"), t=(r["t_offset_ms"] or 0) / 1000, kind=r["type"],
+            observed_action=(r["payload"] or {}).get("normalized_event"),
+            **{k: v for k, v in (r["payload"] or {}).items()
+               if k in {"description", "record_fields", "is_decision_point", "ask_why", "question_id"}}) for r in events],
         last_screen_summary=row["screen_summary"] or "",
         workmap_id=row["id"] if row["summary"] is not None else None,
+        phase=row.get("capture_phase", "capture"), workmap_revision=row.get("workmap_revision", 0),
     )
 
 
-async def create_capture_session(expert_name: str, workflow_id: str) -> CaptureSession:
+async def create_capture_session(expert_name: str, workflow_id: str, session_id: str | None = None) -> CaptureSession:
+    if session_id:
+        existing = await get_capture_session(session_id)
+        if existing:
+            if existing.workflow_id != workflow_id or existing.expert_name != expert_name:
+                raise ValueError("Session identity was reused.")
+            return existing
     row = (
         await _t("sessions")
-        .insert({"kind": "capture", "user_id": await _user_id(expert_name, "expert"), "workflow_id": workflow_id})
+        .insert({**({"id": session_id} if session_id else {}), "owner_principal": caller.get().auth_id, "kind": "capture", "user_id": await _user_id(expert_name, "expert"), "workflow_id": workflow_id})
         .execute()
     ).data[0]
     return CaptureSession(id=row["id"], workflow_id=workflow_id, expert_name=expert_name, started_at=_epoch(row["started_at"]))
@@ -214,18 +228,44 @@ async def get_capture_session(session_id: str) -> CaptureSession | None:
     if not sid:
         return None
     rows = (await _t("sessions").select(_CAPTURE_COLS).eq("id", sid).eq("kind", "capture").execute()).data
+    if rows: authorize_owner(rows[0])
     return _capture(rows[0]) if rows else None
 
 
 async def list_capture_sessions() -> list[CaptureSession]:
-    rows = (await _t("sessions").select(_CAPTURE_COLS).eq("kind", "capture").order("started_at").execute()).data
+    query = _t("sessions").select(_CAPTURE_COLS).eq("kind", "capture")
+    if not caller.get().local and caller.get().role != "admin":
+        query = query.eq("owner_principal", caller.get().auth_id)
+    rows = (await query.order("started_at").execute()).data
     return [_capture(r) for r in rows]
 
 
-async def add_turn(session_id: str, turn: TranscriptTurn) -> None:
-    await _t("transcript_segments").insert(
-        {"session_id": session_id, "speaker": turn.role, "t_start_ms": _ms(turn.t), "text": turn.text}
-    ).execute()
+async def add_turn(session_id: str, turn: TranscriptTurn) -> int:
+    return (await _db.rpc("ingest_transcript", {"p_session": session_id,
+        "p_client": turn.client_id or uuid.uuid4().hex, "p_turn": turn.model_dump(mode="json")}).execute()).data
+
+
+async def ingest_capture(session_id: str, client_id: str, payload: dict) -> dict:
+    from .events.normalizer import normalize_browser_event
+    if any(not event.get("event_id") for event in payload.get("events", [])):
+        raise ValueError("Every browser event needs a stable identity.")
+    payload = {**payload, "events": [normalize_browser_event(e).model_dump(mode="json") for e in payload.get("events", [])]}
+    return (await _db.rpc("ingest_capture", {"p_session": session_id, "p_client": client_id, "p_payload": payload}).execute()).data
+
+
+async def complete_batch(session_id: str, client_id: str, result: ScreenEvent | None, summary: str) -> None:
+    await _db.rpc("complete_capture_batch", {"p_session": session_id, "p_client": client_id,
+        "p_result": result.model_dump(mode="json") if result else None, "p_summary": summary}).execute()
+
+
+async def capture_evidence(session_id: str) -> tuple[list[dict], list[dict]]:
+    segments = await _segments(session_id)
+    events = (await _t("events").select("id,payload").eq("session_id", session_id).execute()).data
+    return segments, events
+
+
+async def set_capture_phase(session_id: str, phase: str) -> None:
+    await _t("sessions").update({"capture_phase": phase}).eq("id", session_id).execute()
 
 
 async def record_frame(session_id: str, screen_summary: str, event: ScreenEvent | None) -> None:
@@ -238,9 +278,9 @@ async def record_frame(session_id: str, screen_summary: str, event: ScreenEvent 
 
 
 # --- Work Maps and skills ---------------------------------------------------
-_EVIDENCE_COLS = "skill_evidence(quote, transcript_segments(t_start_ms))"
+_EVIDENCE_COLS = "skill_evidence(quote, segment_id, event_id, transcript_segments(t_start_ms))"
 _WORKMAP_COLS = (
-    "id, workflow_id, summary, started_at, users!sessions_user_id_fkey(name), "
+    "id, workflow_id, summary, started_at, owner_principal, workmap_revision, capture_phase, teach_back_revision, users!sessions_user_id_fkey(name), "
     f"skills!skills_source_session_fkey(*, {_EVIDENCE_COLS})"
 )
 # A skill on its own, with the name of the expert whose session it came from.
@@ -251,11 +291,11 @@ def _skill(row: dict, expert_name: str | None = None) -> Skill:
     if expert_name is None:
         expert_name = _name(row.get("sessions") or {})
     evidence = [
-        EvidenceRef(t=((e["transcript_segments"] or {}).get("t_start_ms") or 0) / 1000, quote=e["quote"] or "")
+        EvidenceRef(segment_id=e.get("segment_id"), event_id=e.get("event_id"), t=((e["transcript_segments"] or {}).get("t_start_ms") or 0) / 1000, quote=e["quote"] or "")
         for e in row["skill_evidence"]
     ]
     return Skill(
-        id=row["id"],
+        id=row["id"], version=row.get("version", 1), supersedes=row.get("supersedes"),
         title=row["name"],
         trigger=(row["trigger"] or {}).get("all", []),
         action=Action(kind=row["action_kind"] or "other", detail=row["action"]),
@@ -277,6 +317,8 @@ def _workmap(row: dict) -> WorkMap:
         summary=row["summary"] or "",
         recorded_at=_epoch(row["started_at"]),
         skills=[_skill(s, _name(row)) for s in skills],
+        revision=row.get("workmap_revision", 0),
+        teach_back_confirmed=row.get("capture_phase") == "finished" and row.get("teach_back_revision") == row.get("workmap_revision"),
     )
 
 
@@ -293,16 +335,15 @@ def _skill_row(sk: Skill) -> dict:
 
 
 def _segment_for(e: EvidenceRef, segments: list[dict]) -> int | None:
-    """The transcript segment a piece of evidence came from: one containing the quote, else the nearest in time."""
-    if not segments:
+    from .knowledge import resolve_evidence
+    try:
+        return resolve_evidence(e, segments, [{"id": e.event_id}]).segment_id
+    except ValueError:
         return None
-    q = e.quote.strip().lower()
-    hits = [s for s in segments if q and q in s["text"].lower()] or segments
-    return min(hits, key=lambda s: abs((s["t_start_ms"] or 0) - _ms(e.t)))["id"]
 
 
 async def _segments(session_id: str) -> list[dict]:
-    return (await _t("transcript_segments").select("id, t_start_ms, text").eq("session_id", session_id).execute()).data
+    return (await _t("transcript_segments").select("id, t_start_ms, text, speaker, off_record").eq("session_id", session_id).execute()).data
 
 
 async def _set_evidence(skill_id: str, evidence: list[EvidenceRef], segments: list[dict]) -> None:
@@ -328,6 +369,7 @@ async def get_workmap(workmap_id: str) -> WorkMap | None:
     if not sid:
         return None
     rows = (await _t("sessions").select(_WORKMAP_COLS).eq("id", sid).not_.is_("summary", "null").execute()).data
+    if rows: authorize_owner(rows[0])
     return _workmap(rows[0]) if rows else None
 
 
@@ -335,42 +377,42 @@ async def list_workmaps(workflow_id: str | None = None) -> list[WorkMap]:
     q = _t("sessions").select(_WORKMAP_COLS).eq("kind", "capture").not_.is_("summary", "null")
     if workflow_id:
         q = q.eq("workflow_id", workflow_id)
+    if not caller.get().local and caller.get().role != "admin":
+        q = q.eq("owner_principal", caller.get().auth_id)
     rows = (await q.order("started_at", desc=True).execute()).data
     return [_workmap(r) for r in rows]
 
 
-async def create_workmap(session_id: str, summary: str, skills: list[Skill]) -> WorkMap:
-    """Stores the Work Map built from a capture session as draft skills. Rebuilding replaces the previous skills."""
-    await _t("skills").update({"status": "rejected"}).eq("source_session", session_id).neq("status", "rejected").execute()
-    workflow_id = (await _t("sessions").select("workflow_id").eq("id", session_id).execute()).data[0]["workflow_id"]
-    segments = await _segments(session_id)
-    for sk in skills:
-        await _insert_skill(session_id, workflow_id, sk, segments, "draft")
-    await _t("sessions").update({"summary": summary, "status": "done", "ended_at": _now()}).eq("id", session_id).execute()
+async def create_workmap(session_id: str, summary: str, skills: list[Skill], *,
+                         fields: list[RecordField] | None = None, client_id: str | None = None,
+                         expected_revision: int | None = None, edit: bool = False) -> WorkMap:
+    session = await get_capture_session(session_id)
+    workflow = await get_workflow(session.workflow_id)
+    segments, events = await capture_evidence(session_id)
+    fields = fields if fields is not None else workflow.fields
+    payload = {"summary": summary, "skills": draft_payload(skills, fields, segments, events),
+               "fields": [f.model_dump() for f in fields], "mode": "edit" if edit else "build"}
+    await _db.rpc("build_workmap_atomic", {"p_session": session_id, "p_client": client_id or uuid.uuid4().hex,
+        "p_expected": session.workmap_revision if expected_revision is None else expected_revision,
+        "p_payload": payload}).execute()
     return await get_workmap(session_id)
 
 
 async def update_workmap(wm: WorkMap) -> WorkMap | None:
-    """Expert edits: update skills that exist, add new ones, reject the ones left out."""
-    sid = _id(wm.id)
-    existing = await get_workmap(sid) if sid else None
-    if not existing:
-        return None
-    current = {
-        r["id"]: r["version"]
-        for r in (await _t("skills").select("id, version").eq("source_session", sid).neq("status", "rejected").execute()).data
-    }
-    segments = await _segments(sid)
-    for sk in wm.skills:
-        if sk.id in current:
-            await _t("skills").update({**_skill_row(sk), "version": current.pop(sk.id) + 1}).eq("id", sk.id).execute()
-            await _set_evidence(sk.id, sk.evidence, segments)
-        else:
-            await _insert_skill(sid, existing.workflow_id, sk, segments, "draft")
-    if current:
-        await _t("skills").update({"status": "rejected"}).in_("id", list(current)).execute()
-    await _t("sessions").update({"summary": wm.summary}).eq("id", sid).execute()
-    return await get_workmap(sid)
+    existing = await get_workmap(wm.id)
+    if not existing: return None
+    current = {s.id: s for s in existing.skills}
+    updated = []
+    for skill in wm.skills:
+        if skill.id and skill.id not in current:
+            raise ValueError("Skill does not belong to this Work Map.")
+        if skill.id:
+            old = current[skill.id]
+            if skill.version != old.version:
+                raise ValueError("The skill version changed. Refresh before editing.")
+            skill = skill.model_copy(update={"supersedes": old.id, "status": "draft"})
+        updated.append(skill)
+    return await create_workmap(wm.id, wm.summary, updated, expected_revision=wm.revision, edit=True)
 
 
 async def get_skill(skill_id: str) -> Skill | None:
@@ -378,21 +420,21 @@ async def get_skill(skill_id: str) -> Skill | None:
     if not sid:
         return None
     rows = (await _t("skills").select(_SKILL_COLS).eq("id", sid).execute()).data
+    if rows:
+        session_rows = (await _t("sessions").select("owner_principal").eq("id", rows[0]["source_session"]).execute()).data
+        if session_rows: authorize_owner(session_rows[0])
     return _skill(rows[0]) if rows else None
 
 
-async def set_skill_status(skill_id: str, status: str) -> Skill | None:
-    """Expert review. Approving publishes the skill to trainees; the approver is the expert who recorded it."""
-    sid = _id(skill_id)
-    rows = (await _t("skills").select("source_session").eq("id", sid).execute()).data if sid else []
-    if not rows:
-        return None
-    update: dict = {"status": status, "approved_by": None}
-    if status == "approved":
-        session = (await _t("sessions").select("user_id").eq("id", rows[0]["source_session"]).execute()).data
-        update["approved_by"] = session[0]["user_id"] if session else None
-    await _t("skills").update(update).eq("id", sid).execute()
-    return await get_skill(sid)
+async def set_skill_status(skill_id: str, status: str, expected_version: int) -> Skill | None:
+    sk = await get_skill(skill_id)
+    if not sk: return None
+    row = (await _t("skills").select("source_session").eq("id", skill_id).execute()).data[0]
+    await get_capture_session(row["source_session"])
+    actor = caller.get().user_id or await _user_id("Local operator", "admin")
+    await _db.rpc("review_skill_atomic", {"p_skill": skill_id, "p_expected": expected_version,
+        "p_status": status, "p_actor": actor}).execute()
+    return await get_skill(skill_id)
 
 
 async def published_skills(workflow_id: str) -> list[Skill]:
@@ -446,26 +488,19 @@ def _tutor(row: dict) -> TutorSession:
         case_id=record.get("id", ""),
         original_record=record,
         matched_skill_ids=row["matched_skill_ids"] or [],
-        attempts=[_attempt(a) for a in sorted(row["attempts"], key=lambda a: a["created_at"])],
+        attempts=[_attempt(a) for a in sorted(row["attempts"], key=lambda a: (a["created_at"], a.get("ordinal", 0)))],
         saved=row["status"] == "done",
+        skill_snapshot=[Skill.model_validate(s) for s in row.get("skill_snapshot") or []],
+        workflow_snapshot=Workflow.model_validate(row["workflow_snapshot"]) if row.get("workflow_snapshot") else None,
     )
 
 
-async def create_tutor_session(learner_name: str, workflow_id: str, record: dict, matched_skill_ids: list[str]) -> TutorSession:
-    row = (
-        await _t("sessions")
-        .insert(
-            {
-                "kind": "training",
-                "user_id": await _user_id(learner_name, "trainee"),
-                "workflow_id": workflow_id,
-                "record": record,
-                "matched_skill_ids": matched_skill_ids,
-            }
-        )
-        .execute()
-    ).data[0]
-    return _tutor({**row, "users": {"name": learner_name}, "attempts": []})
+async def create_tutor_session(learner_name: str, workflow_id: str, record: dict, matched_skill_ids: list[str], *, skills: list[Skill], workflow: Workflow) -> TutorSession:
+    sid = (await _db.rpc("start_tutor_atomic", {"p_actor": await _user_id(learner_name, "trainee"),
+        "p_owner": caller.get().auth_id, "p_workflow": workflow_id, "p_record": record,
+        "p_matched": matched_skill_ids, "p_skills": [s.model_dump(mode="json") for s in skills],
+        "p_workflow_snapshot": workflow.model_dump(mode="json")}).execute()).data
+    return await get_tutor_session(sid)
 
 
 async def get_tutor_session(session_id: str) -> TutorSession | None:
@@ -473,46 +508,15 @@ async def get_tutor_session(session_id: str) -> TutorSession | None:
     if not sid:
         return None
     rows = (await _t("sessions").select(_TUTOR_COLS).eq("id", sid).eq("kind", "training").execute()).data
+    if rows: authorize_owner(rows[0])
     return _tutor(rows[0]) if rows else None
 
 
 async def record_prediction(ts: TutorSession, skill_id: str, prediction: str, correct: bool, feedback: str) -> None:
-    await _t("attempts").insert(
-        {
-            "session_id": ts.id,
-            "skill_id": skill_id,
-            "trainee_id": await _user_id(ts.learner_name, "trainee"),
-            "prediction": prediction,
-            # A wrong prediction gets the expert's answer explained, so it counts as a hint, not a mistake.
-            "outcome": "correct" if correct else "hinted",
-            "tutor_message": feedback,
-        }
-    ).execute()
-    await _t("interventions").insert(
-        {"session_id": ts.id, "skill_id": skill_id, "kind": "praise" if correct else "explain", "message": feedback}
-    ).execute()
+    await _db.rpc("record_tutor_attempt", {"p_session": ts.id, "p_kind": "prediction", "p_skill": skill_id,
+        "p_prediction": prediction, "p_correct": correct, "p_feedback": feedback}).execute()
 
 
 async def record_save_check(ts: TutorSession, blocked: dict[str, str]) -> None:
-    """One attempt per matched skill. `blocked` maps the skill ids whose guardrail failed to the message shown."""
-    if ts.matched_skill_ids:
-        trainee_id = await _user_id(ts.learner_name, "trainee")
-        await _t("attempts").insert(
-            [
-                {
-                    "session_id": ts.id,
-                    "skill_id": sid,
-                    "trainee_id": trainee_id,
-                    "outcome": "caught" if sid in blocked else "correct",
-                    "blocked_save": sid in blocked,
-                    "tutor_message": blocked.get(sid),
-                }
-                for sid in ts.matched_skill_ids
-            ]
-        ).execute()
-    if blocked:
-        await _t("interventions").insert(
-            [{"session_id": ts.id, "skill_id": sid, "kind": "block", "message": msg} for sid, msg in blocked.items()]
-        ).execute()
-    saved = {"status": "done", "ended_at": _now()} if not blocked else {"status": "live"}
-    await _t("sessions").update(saved).eq("id", ts.id).execute()
+    await _db.rpc("record_tutor_attempt", {"p_session": ts.id, "p_kind": "save_check", "p_skill": None,
+        "p_prediction": None, "p_correct": None, "p_feedback": None, "p_blocked": blocked}).execute()

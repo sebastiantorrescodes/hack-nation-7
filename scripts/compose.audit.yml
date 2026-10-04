@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: audit-only-local
+      POSTGRES_DB: apprentice_audit
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ./audit:/audit:ro
+      - ./db.sql:/schema/base.sql:ro
+      - ./migrations:/schema/migrations:ro
+  rest:
+    image: postgrest/postgrest:v12.2.8
+    environment:
+      PGRST_DB_URI: postgres://postgres:audit-only-local@postgres:5432/apprentice_audit
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: local-audit-only-secret-at-least-32-characters
+    ports:
+      - "127.0.0.1:55433:3000"
+    depends_on:
+      - postgres

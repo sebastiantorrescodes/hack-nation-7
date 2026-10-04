@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type PracticeCase, type WorkRecord, type Workflow } from "../lib/api";
-import { snapshotPage } from "../lib/page";
+import { api, type PracticeCase, type WorkRecord, type Workflow, type RecordField } from "../lib/api";
+import { getAppTab, snapshotPage } from "../lib/page";
 import { RecordForm, RecordView } from "./RecordForm";
 
 type ShownRecord = WorkRecord & { id: string; label?: string };
@@ -13,7 +13,7 @@ type Grade = {
   expert_name: string;
 };
 type Violation = { skill_id: string; title: string; guardrail: string; failed: string[]; expert_explanation: string; expert_name: string };
-type CheckResult = { ok: boolean; violations: Violation[] };
+type CheckResult = { ok: boolean; violations: Violation[]; unknown_fields?: string[]; detail?: string };
 type Report = { headline: string; skills: { skill_id: string; title: string; status: string; note: string }[]; practice_next: string[] };
 
 function violationMessage(v: Violation[]) {
@@ -41,9 +41,12 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [recoverable, setRecoverable] = useState<{tabId: number; sessionId: string} | null>(null);
+  const [fields, setFields] = useState<RecordField[]>(workflow.fields);
 
   const sessionRef = useRef<string | null>(null);
-  sessionRef.current = sessionId;
+  const boundTab = useRef<number | null>(null);
+  sessionRef.current = report ? null : sessionId;
   const isLive = record?.id === "live";
   const appName = workflow.app || "the app";
 
@@ -54,8 +57,9 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
         if (c.length) setSource(c[0].id);
       })
       .catch((e) => setError(String(e)));
-    // Leaving the tutor: stop holding Save clicks in the app.
-    return () => void chrome.storage.local.set({ guardSave: false });
+    chrome.storage.local.get("guardSave").then(v => {
+      if (v.guardSave?.workflowId === workflow.id) setRecoverable(v.guardSave);
+    });
   }, [workflow.id]);
 
   useEffect(() => onSessionChange(!!sessionId && !report), [sessionId, report, onSessionChange]);
@@ -65,19 +69,18 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     const onMsg = (msg: { type?: string }, _sender: chrome.runtime.MessageSender, sendResponse: (r: unknown) => void) => {
       if (msg.type !== "save-attempt") return;
       const id = sessionRef.current;
-      if (!id) {
-        sendResponse({ ok: true });
-        return;
-      }
+      if (_sender.tab?.id !== boundTab.current) return;
+      if (!id) { sendResponse({ok: false, message: "The tutor is unavailable. Reopen it before saving."}); return; }
       (async () => {
         try {
-          const page = await snapshotPage();
+          const page = await snapshotPage(boundTab.current ?? undefined);
           const res = await api<CheckResult>(`/api/tutor/sessions/${id}/check`, { body: { page } });
           setCheck(res);
-          sendResponse({ ok: res.ok, message: violationMessage(res.violations) });
+          if (res.detail) setError(res.detail);
+          sendResponse({ ok: res.ok, message: res.detail || violationMessage(res.violations) });
         } catch (e) {
-          setError(`Save check failed, letting the save through: ${String(e)}`);
-          sendResponse({ ok: true });
+          setError(`Save check could not be completed: ${String(e)}`);
+          sendResponse({ ok: false, message: "The tutor could not verify this save. Retry when it is connected." });
         }
       })();
       return true; // keep the channel open for the async response
@@ -94,21 +97,38 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     setReport(null);
     setBusy(source === "live" ? `Reading the record from ${appName}…` : "Starting…");
     try {
+      const tab = source === "live" ? await getAppTab() : undefined;
+      boundTab.current = tab?.id ?? null;
       const body =
         source === "live"
-          ? { learner_name: learner, workflow_id: workflow.id, page: await snapshotPage() }
+          ? { learner_name: learner, workflow_id: workflow.id, page: await snapshotPage(boundTab.current ?? undefined) }
           : { learner_name: learner, workflow_id: workflow.id, case_id: source };
       const res = await api<{ session: { id: string }; record: ShownRecord; decision_points: DecisionPoint[] }>("/api/tutor/sessions", { body });
       setSessionId(res.session.id);
       setRecord(res.record);
       setEdited(structuredClone(res.record));
       setPoints(res.decision_points);
-      await chrome.storage.local.set({ guardSave: source === "live" });
+      await chrome.storage.local.set({ guardSave: source === "live" ? {tabId: boundTab.current, sessionId: res.session.id, workflowId: workflow.id} : false });
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy("");
     }
+  }
+
+  async function recover() {
+    if (!recoverable) return;
+    setBusy("Recovering tutoring session…"); setError("");
+    try {
+      const res = await api<{record: ShownRecord; fields: RecordField[]; decision_points: DecisionPoint[]; grades: Record<string, Grade>}>(`/api/tutor/sessions/${recoverable.sessionId}`);
+      boundTab.current = recoverable.tabId;
+      setSessionId(recoverable.sessionId); setRecord(res.record); setEdited(structuredClone(res.record));
+      setFields(res.fields); setPoints(res.decision_points); setGrades(res.grades); setRecoverable(null);
+    } catch(e) {setError(String(e));}
+    finally {setBusy("");}
+  }
+  async function exitRecoveredSession() {
+    await chrome.storage.local.set({guardSave: false}); setRecoverable(null);
   }
 
   async function submitPrediction(skillId: string) {
@@ -128,7 +148,9 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     if (!sessionId || !edited) return;
     setBusy("Checking your changes…");
     try {
-      setCheck(await api<CheckResult>(`/api/tutor/sessions/${sessionId}/check`, { body: { record: edited } }));
+      const result = await api<CheckResult>(`/api/tutor/sessions/${sessionId}/check`, { body: { record: edited } });
+      setCheck(result);
+      setError(result.detail ?? "");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -140,7 +162,10 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
     if (!sessionId) return;
     setBusy("Writing your mastery report…");
     try {
-      setReport(await api<Report>(`/api/tutor/sessions/${sessionId}/report`));
+      const result = await api<Report>(`/api/tutor/sessions/${sessionId}/report`);
+      setReport(result);
+      sessionRef.current = null;
+      boundTab.current = null;
       await chrome.storage.local.set({ guardSave: false });
     } catch (e) {
       setError(String(e));
@@ -151,7 +176,8 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
 
   return (
     <section>
-      {!sessionId && (
+      {recoverable && !sessionId && <div className="card"><p>A tutoring session is still holding saves on its original tab.</p><button onClick={recover} disabled={!!busy}>Resume tutoring</button><button onClick={exitRecoveredSession} disabled={!!busy}>End teach mode</button></div>}
+      {!sessionId && !recoverable && (
         <>
           <p className="muted">Work a record you haven't seen. Predict each decision, then save. The tutor checks your work before it saves.</p>
           <label>
@@ -178,7 +204,7 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
         <>
           <article className="card">
             <h3>{record.label ?? record.id}</h3>
-            <RecordView fields={workflow.fields} record={record} />
+            <RecordView fields={fields} record={record} />
           </article>
 
           <h4>Decision points ({points.length})</h4>
@@ -217,7 +243,7 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
           {!isLive && edited && (
             <article className="card">
               <h4>Make your changes</h4>
-              <RecordForm fields={workflow.fields} record={edited} onChange={setEdited} />
+              <RecordForm fields={fields} record={edited} onChange={setEdited} />
               <button className="primary" onClick={savePractice} disabled={!!busy}>
                 Save
               </button>
@@ -230,7 +256,7 @@ export default function Tutor({ workflow, learner, onSessionChange }: Props) {
           {check && (
             <div className={check.ok ? "feedback ok" : "feedback bad"}>
               {check.ok ? (
-                <b>Passes every guardrail. Saved.</b>
+                <b>Passes the verified guardrails. The website handles the save.</b>
               ) : (
                 <>
                   <b>Save blocked.</b>

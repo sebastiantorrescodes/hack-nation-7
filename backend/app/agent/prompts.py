@@ -34,7 +34,9 @@ Return only the requested decision JSON; use null for arguments unrelated to the
 def decision_content(event: ObservedEvent, state: WorkMapState, context: CaptureContext) -> str:
     """Serialize observed facts, current knowledge and gaps for the reasoning LLM."""
     return json.dumps({
-        "event": event.model_dump(), "workmap": state.model_dump(),
+        "event": event.model_dump(), "workmap": {**state.model_dump(exclude={"events", "answers"}),
+            "events": {k: v.model_dump() for k, v in list(state.events.items())[-40:]},
+            "answers": [a.model_dump() for a in state.answers[-30:]]},
         "missing_fields": get_missing_fields(state), "capture_context": context.model_dump(),
     }, ensure_ascii=False)
 

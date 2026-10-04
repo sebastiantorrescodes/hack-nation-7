@@ -61,6 +61,58 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             effort="high", transport=httpx.MockTransport(handler))
         self.assertEqual(result, WAIT)
 
+    async def test_gemini_key_selects_google_with_images_schema_and_thinking(self):
+        content = [{"type": "text", "text": "Synthetic screen"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}]
+        def handler(request):
+            self.assertEqual(str(request.url), api_llm.GEMINI_ENDPOINT)
+            self.assertEqual(request.headers["Authorization"], "Bearer synthetic-google-key")
+            payload = json.loads(request.content)
+            self.assertEqual(payload["model"], api_llm.DEFAULT_GEMINI_MODEL)
+            self.assertEqual(payload["reasoning_effort"], "low")
+            self.assertEqual(payload["response_format"]["json_schema"]["schema"], {"type": "object"})
+            self.assertEqual(payload["messages"][1]["content"][1]["image_url"]["url"], "data:image/jpeg;base64,AAAA")
+            self.assertNotIn("provider", payload)
+            self.assertNotIn("reasoning", payload)
+            self.assertNotIn("test-key", request.content.decode())
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+                "message": {"content": json.dumps(WAIT)}}]})
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "synthetic-google-key"}):
+            result = await api_llm.structured(system="Synthetic", content=content, schema={"type": "object"},
+                transport=httpx.MockTransport(handler))
+        self.assertEqual(result, WAIT)
+
+    async def test_explicit_provider_wins_even_with_both_keys_configured(self):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "synthetic-google-key", "LLM_PROVIDER": "openrouter"}):
+            self.assertEqual(api_llm.configured_model(), ("openrouter", api_llm.DEFAULT_MODEL))
+            await self.test_free_routing_and_schema_request()
+
+    async def test_google_failure_never_falls_back_to_openrouter_or_prints_credentials(self):
+        for status in [400, 401, 403, 404, 429, 503]:
+            calls = []
+            def handler(request):
+                calls.append(str(request.url))
+                return httpx.Response(status, text="PRIVATE MODEL RESPONSE synthetic-google-key")
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "synthetic-google-key"}), self.assertRaises(api_llm.ReasoningAPIError) as failure:
+                await self.call(handler)
+            self.assertEqual(calls, [api_llm.GEMINI_ENDPOINT])
+            self.assertIn(f"Gemini HTTP {status}", str(failure.exception))
+            self.assertNotIn("PRIVATE", str(failure.exception))
+            self.assertNotIn("synthetic-google-key", str(failure.exception))
+
+    async def test_unlisted_google_models_invalid_provider_and_missing_google_key_fail_locally(self):
+        for values in [{"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": ""},
+                {"LLM_PROVIDER": "gemini", "GEMINI_MODEL": "gemini-pro"}, {"LLM_PROVIDER": "arbitrary"}]:
+            with patch.dict("os.environ", values), self.assertRaises(api_llm.ReasoningAPIError):
+                await self.call(lambda request: self.fail("Invalid configuration must not send a request"))
+
+    async def test_google_json_is_validated_with_the_same_evidence_schema(self):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "synthetic-google-key"}), self.assertRaises(api_llm.ReasoningAPIError):
+            await api_llm.structured(system="Synthetic", content="Synthetic",
+                schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [
+                    {"finish_reason": "stop", "message": {"content": '{"ok": "not a boolean"}'}}]})))
+
     async def test_missing_key_and_paid_model_fail_before_network(self):
         for values in [{"OPENROUTER_API_KEY": ""}, {"OPENROUTER_MODEL": "qwen/paid"}]:
             with patch.dict("os.environ", values), self.assertRaises(api_llm.ReasoningAPIError):
@@ -89,6 +141,18 @@ class APITests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(api_llm.ReasoningAPIError) as error:
             await self.call(handler)
         self.assertNotIn("private diagnostic", str(error.exception))
+
+    async def test_live_reasoning_deadline_is_shorter_than_a_whole_session_build(self):
+        for effort, deadline in [("low", 45), ("high", 180)]:
+            def handler(request):
+                self.assertEqual(request.extensions["timeout"]["read"], deadline)
+                self.assertEqual(request.extensions["timeout"]["connect"], 10)
+                raise httpx.ReadTimeout("Private provider timeout", request=request)
+            with self.subTest(effort=effort), self.assertRaises(api_llm.ReasoningAPIError) as failure:
+                await api_llm.structured(system="Synthetic", content="Synthetic", schema={"type": "object"},
+                    effort=effort, transport=httpx.MockTransport(handler))
+            self.assertIn("Captured facts are retained", str(failure.exception))
+            self.assertNotIn("Private provider", str(failure.exception))
 
     async def test_default_agent_uses_api_and_rejects_arbitrary_action(self):
         event = normalize_browser_event({"event_id": "e1", "event_type": "click", "target": "Review"})

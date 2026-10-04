@@ -34,6 +34,14 @@ class ElevenLabsSpeech:
     async def speak(self, text: str) -> bytes:
         if not text.strip() or len(text) > 300:
             raise ValueError("Speech must be one question of at most 300 characters.")
+        return await self._synthesize(text)
+
+    async def speak_teach_back(self, text: str) -> bytes:
+        if not text.strip() or len(text) > 5000:
+            raise ValueError("Read this teach-back on screen; it exceeds the voice preview limit.")
+        return await self._synthesize(text)
+
+    async def _synthesize(self, text: str) -> bytes:
         response = await self._request("POST", f"text-to-speech/{self.voice}",
             params={"output_format": "mp3_44100_128"},
             json={"text": text, "model_id": "eleven_flash_v2_5"})

@@ -16,7 +16,12 @@ export default function Trainee({ active }: { active: boolean }) {
   learnerRef.current = learner;
   const load = useCallback(() => {
     api<Workflow[]>(`/api/workflows/published?learner=${encodeURIComponent(learnerRef.current)}`)
-      .then(setWorkflows)
+      .then(async items => {
+        setWorkflows(items);
+        const saved = await chrome.storage.local.get("guardSave");
+        const resume = items.find(w => w.id === saved.guardSave?.workflowId);
+        if (resume) setSelected(resume);
+      })
       .catch((e) => setError(String(e)));
   }, []);
   useEffect(() => {

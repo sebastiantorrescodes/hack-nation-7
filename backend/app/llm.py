@@ -1,4 +1,4 @@
-"""LLM calls for the capture and tutor routes, through the free-only OpenRouter adapter.
+"""LLM calls for capture and tutoring through the shared Gemini/OpenRouter adapter.
 Every call returns JSON constrained by a schema (structured outputs)."""
 
 from . import api_llm
@@ -58,11 +58,12 @@ WORKMAP_SCHEMA = _obj(
             "items": _obj(
                 {
                     "title": _STR,
+                    "supersedes": {"type": ["string", "null"]},
                     "trigger": {"type": "array", "items": CONDITION_SCHEMA},
                     "action": _obj({"kind": {"type": "string", "enum": ACTION_KINDS}, "detail": _STR}),
                     "expert_explanation": _STR,
                     "guardrail": _obj({"description": _STR, "must": {"type": "array", "items": CONDITION_SCHEMA}}),
-                    "evidence": {"type": "array", "items": _obj({"t": _NUM, "quote": _STR})},
+                    "evidence": {"type": "array", "items": _obj({"t": _NUM, "quote": _STR, "segment_id": {"type": "integer"}, "event_id": {"type": "integer"}})},
                 }
             ),
         },

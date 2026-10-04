@@ -5,7 +5,7 @@ from .llm import fields_doc, structured
 from .models import RecordField, Workflow
 
 _TYPES = {
-    "list": {"type": "array", "items": {"type": "string"}},
+    "list": {"type": ["array", "null"], "items": {"type": "string"}},
     "number": {"type": ["number", "null"]},
     "boolean": {"type": ["boolean", "null"]},
     "string": {"type": ["string", "null"]},
@@ -30,7 +30,7 @@ async def extract_record(wf: Workflow, page: str, image_base64: str | None = Non
         raise NoFields(f'"{wf.name}" has no record fields yet. Record a session or add fields first.')
     system = (
         f"You read a text snapshot of a screen in {wf.app or 'a web app'} and fill in the record it shows, "
-        f"for the workflow \"{wf.name}\". Use null (or [] for lists) for anything not visible - never guess. "
+        f"for the workflow \"{wf.name}\". Use null for anything not visible, including lists. An empty list means you observed that the list is empty. Never guess or turn unknown booleans into false. "
         "Copy codes and identifiers exactly as shown, without their descriptions.\n\nFields:\n" + fields_doc(wf.fields)
     )
     content: list[dict] = [{"type": "text", "text": page[:60000]}]

@@ -1,7 +1,8 @@
 -- AI Apprentice: Supabase / Postgres schema
 -- Flow: expert capture session -> raw events/transcript/media -> Work Map (skills)
 --       -> expert approves -> published Work Map -> trainee sessions -> attempts -> mastery
--- Includes everything in migrations/; on an existing database, run those instead.
+-- Includes migrations 001 and 002. After a fresh install apply 003 and 004.
+-- Existing databases apply only their missing migrations, in order.
 
 create extension if not exists "pgcrypto";
 

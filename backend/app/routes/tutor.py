@@ -24,7 +24,9 @@ async def _session(session_id: str) -> tuple[TutorSession, Workflow, list[Skill]
     ts = await store.get_tutor_session(session_id)
     if not ts:
         raise HTTPException(404, "tutor session not found")
-    return ts, await _workflow(ts.workflow_id), await store.published_skills(ts.workflow_id)
+    if ts.workflow_snapshot is None:
+        raise HTTPException(409, "This training session needs a version snapshot. Start a new session.")
+    return ts, ts.workflow_snapshot, ts.skill_snapshot
 
 
 async def _extract(wf: Workflow, page: str) -> dict:
@@ -45,6 +47,19 @@ def _fmt(c: Condition) -> str:
     return f"{c.field} {c.op} {', '.join(c.values)}".strip()
 
 
+@router.get("/sessions/{session_id}")
+async def resume_session(session_id: str) -> dict:
+    ts, wf, skills = await _session(session_id)
+    predictions = [a for a in ts.attempts if a.kind == "prediction"]
+    return {"session": {"id": ts.id}, "record": ts.original_record, "fields": wf.fields,
+        "decision_points": [{"skill_id": s.id, "title": s.title, "trigger": [_fmt(c) for c in s.trigger]}
+                            for s in skills if s.id in ts.matched_skill_ids],
+        "grades": {a.skill_id: {"correct": a.correct, "feedback": a.detail,
+            "expert_action": _skill(skills,a.skill_id).action,
+            "expert_explanation": _skill(skills,a.skill_id).expert_explanation,
+            "expert_name": _skill(skills,a.skill_id).expert_name} for a in predictions}}
+
+
 class StartBody(BaseModel):
     learner_name: str
     workflow_id: str
@@ -63,16 +78,16 @@ async def start(body: StartBody) -> dict:
         case = await store.get_case(body.case_id)
         if not case or case.workflow_id != wf.id:
             raise HTTPException(404, "practice case not found")
-        record = {"id": case.id, "label": case.label, **case.data}
+        record = {**case.data, "id": case.id, "label": case.label}
     elif body.page:
-        record = {"id": "live", "label": f"Open in {wf.app or 'the app'}", **await _extract(wf, body.page)}
+        record = {**await _extract(wf, body.page), "id": "live", "label": f"Open in {wf.app or 'the app'}"}
     else:
         raise HTTPException(400, "send case_id or page")
     matched = rules.triggered_skills(skills, record)
-    ts = await store.create_tutor_session(body.learner_name, wf.id, record, [s.id for s in matched])
+    ts = await store.create_tutor_session(body.learner_name, wf.id, record, [s.id for s in matched], skills=skills, workflow=wf)
     # Only reveal *that* a decision point exists, not the answer: the learner predicts first.
     return {
-        "session": ts,
+        "session": {"id": ts.id},
         "record": record,
         "decision_points": [{"skill_id": s.id, "title": s.title, "trigger": [_fmt(c) for c in s.trigger]} for s in matched],
     }
@@ -94,6 +109,10 @@ right, reinforce why, again in the expert's words, and add one nuance they might
 @router.post("/sessions/{session_id}/predict")
 async def predict(session_id: str, body: PredictBody) -> dict:
     ts, wf, skills = await _session(session_id)
+    if body.skill_id not in ts.matched_skill_ids:
+        raise HTTPException(404, "This skill is not a decision point in the session.")
+    if any(a.skill_id == body.skill_id and a.kind == "prediction" for a in ts.attempts):
+        raise HTTPException(409, "This decision already has a prediction.")
     sk = _skill(skills, body.skill_id)
     result = await structured(
         effort="low",
@@ -129,7 +148,11 @@ async def check_before_save(session_id: str, body: CheckBody) -> dict:
         edited = await _extract(wf, body.page)
     else:
         raise HTTPException(400, "send record or page")
-    violations = rules.guardrail_violations(skills, ts.original_record, edited)
+    try:
+        violations = rules.guardrail_violations(skills, ts.original_record, edited)
+    except rules.UnknownRecord as exc:
+        return {"ok": False, "record_seen": edited, "violations": [], "unknown_fields": exc.fields,
+            "detail": str(exc)}
     await store.record_save_check(ts, {sk.id: sk.guardrail.description for sk, _ in violations})
     return {
         "ok": not violations,
@@ -160,19 +183,8 @@ async def report(session_id: str) -> dict:
     skills = [s for s in published if s.id in ts.matched_skill_ids]
     if not skills:
         return {"headline": "This record had no decision points from the Work Map.", "skills": [], "practice_next": []}
-    log = [a.model_dump() for a in ts.attempts]
-    result = await structured(
-        effort="low",
-        max_tokens=4000,
-        system=REPORT_SYSTEM,
-        content=(
-            f"Workflow: {wf.name}\nLearner: {ts.learner_name}\n\nSkills on this record:\n"
-            + "\n".join(f"- {s.id}: {s.title}" for s in skills)
-            + f"\n\nAttempt log (in order):\n{json.dumps(log, indent=1)}"
-        ),
-        schema=REPORT_SCHEMA,
-    )
-    titles = {s.id: s.title for s in skills}
-    for row in result["skills"]:
-        row["title"] = titles.get(row["skill_id"], row["skill_id"])
-    return result
+    rows = [{"skill_id": sk.id, "title": sk.title, "version": sk.version,
+             "status": rules.mastery_status(ts.attempts, sk.id),
+             "note": "Mastery requires a correct first prediction before a correct first save check."} for sk in skills]
+    return {"headline": "Your report reflects your first prediction and save check for each decision.",
+            "skills": rows, "practice_next": ["Practice: " + sk["title"] for sk in rows if sk["status"] != "mastered"][:3]}

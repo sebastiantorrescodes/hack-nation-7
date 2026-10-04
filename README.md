@@ -159,7 +159,7 @@ backend/
     test_agent.py     # Tests the brain using a fake LLM and explicit expert actions.
 ```
 
-Call `await process_event(event, state, context)` to use the OpenRouter
+Call `await process_event(event, state, context)` to use the configured Gemini/OpenRouter
 `app.api_llm.structured` adapter, or supply `reason=your_async_callable` for an alternate
 reasoning provider or an offline test. The callable receives `system`, `content`,
 `schema`, `max_tokens`, and `effort` as keyword arguments and returns a decision
@@ -213,10 +213,15 @@ tests, so live model behavior is still unverified. Step 4 has not been started.
 
 ## How it fits together
 
+See the current [integrated architecture and setup](docs/agentic-backend.md) and
+[verification results](docs/functional-verification.md). The staged sections above
+describe the earlier standalone modules. Capture now commits canonical evidence and
+atomic draft skills; tutoring pins approved versions and derives mastery deterministically.
+
 | Part | Folder | What it does |
 |---|---|---|
 | Chrome extension | [extension/](extension/) | Side panel UI (React + Vite) with an **Expert** tab and a **Trainee** tab. A content script runs in every frame of every page. It reports field changes and button clicks (never passwords) while an interview is recorded, and in tutor mode it holds Save/Submit clicks until the guardrail check passes. |
-| Backend | [backend/](backend/) | FastAPI on Supabase. Calls a free vision model on OpenRouter (Qwen by default) to spot decision points, build the Work Map (and the workflow's record fields), read records off the page, grade predictions and write mastery reports. Gives the side panel a signed URL for the ElevenLabs agent. |
+| Backend | [backend/](backend/) | FastAPI on Supabase. Uses the shared Gemini/OpenRouter adapter to interpret screenshots, optionally identify decisions, build Work Maps, extract records and grade predictions. Mastery is deterministic. Gives the side panel a signed URL for the ElevenLabs agent. |
 | Database | Supabase | Schema in [scripts/db.sql](scripts/db.sql); existing databases apply [scripts/migrations/](scripts/migrations/) in order. |
 | Voice | ElevenLabs Conversational AI | Interviews the expert. When the model spots a decision point, the side panel sends the agent a contextual update with the "why" question to ask. |
 Flow:
@@ -239,7 +244,7 @@ copy .env.example .env          # macOS/Linux: cp .env.example .env, then fill i
 uvicorn app.main:app --reload --port 8000
 ```
 
-`.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (the secret key), `OPENROUTER_API_KEY` (see [docs/qwen-api-setup.md](docs/qwen-api-setup.md)), `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`. Apply [scripts/db.sql](scripts/db.sql) in the Supabase SQL editor first.
+`.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (the secret key), `OPENROUTER_API_KEY` (see [docs/qwen-api-setup.md](docs/qwen-api-setup.md)), `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`. For a fresh database apply [scripts/db.sql](scripts/db.sql), then migrations 003 and 004. The base already includes 001 and 002.
 
 ### 2. ElevenLabs agent
 
@@ -303,12 +308,27 @@ Data is kept in Docker volumes, so the next `up` is fast. To wipe everything and
 ```sh
 docker compose down -v
 ```
-# Qwen API agent
+# Model API setup
 
-Every LLM call (capture, Work Map, tutor and the staged apprentice) uses free-only
-OpenRouter reasoning through `backend/app/api_llm.py`.
-See [setup and live test instructions](docs/qwen-api-setup.md). The capture routes
-still use their own frame-analysis prompt until the apprentice is wired in.
+For the A/B/C explanation of the capture, Gemini and teaching changes, see
+[what we built](docs/implementation-summary.md).
+
+Every backend model call (screen preview, optional frame analysis, Work Map, tutor
+and bounded apprentice) uses `backend/app/api_llm.py`. With `LLM_PROVIDER=auto`
+(the default), `GEMINI_API_KEY` selects Gemini Flash; otherwise the adapter uses
+zero-price OpenRouter routing. Existing ElevenLabs voice, evidence, review and
+teaching remain one flow. There is no automatic provider fallback.
+
+For Gemini, create a key in [Google AI Studio](https://aistudio.google.com/apikey)
+and save `GEMINI_API_KEY` in `backend/.env`. Use a project marked **Free tier**, with
+billing disabled. The default is `gemini-3.5-flash-lite`, which passed the synthetic
+end-to-end build. Optional `GEMINI_MODEL=gemini-3.8-flash` selects the heavier Flash
+model explicitly. Google's API cannot enforce zero-price routing
+on a billing-enabled project. Free-tier content may be used to improve Google's
+products; use synthetic records for demonstrations. Never commit keys.
+
+Set `LLM_PROVIDER=openrouter` to retain the existing Qwen configuration explicitly.
+See [OpenRouter setup](docs/qwen-api-setup.md) and [UI testing](docs/ui-capture-setup.md).
 
 Try the [Qwen + ElevenLabs voice demo](docs/voice-demo.md) for spoken questions,
 recorded answers, and evidence-backed proposals using the staged apprentice.

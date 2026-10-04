@@ -35,6 +35,7 @@ class ExpertAnswer(BaseModel):
     question_id: str
     event_id: str
     text: str = Field(min_length=1)
+    segment_id: int | None = None
 
 
 class StepProposal(BaseModel):
@@ -66,6 +67,8 @@ class WorkMapState(BaseModel):
     phase: Literal["capture", "debrief", "finished"] = "capture"
     events: dict[str, ObservedEvent] = Field(default_factory=dict)
     questions: list[ExpertQuestion] = Field(default_factory=list)
+    delivered_question_ids: list[str] = Field(default_factory=list)
+    delivery_segments: dict[str, int] = Field(default_factory=dict)
     answers: list[ExpertAnswer] = Field(default_factory=list)
     steps: list[WorkflowStep] = Field(default_factory=list)
     teach_back_confirmed_by: str | None = None

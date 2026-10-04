@@ -47,6 +47,8 @@ class Guardrail(BaseModel):
 class EvidenceRef(BaseModel):
     t: float  # seconds since session start
     quote: str
+    segment_id: int | None = None
+    event_id: int | None = None
 
 
 class Skill(BaseModel):
@@ -60,6 +62,8 @@ class Skill(BaseModel):
     # Only approved skills are published to trainees.
     status: Literal["draft", "approved", "rejected"] = "draft"
     expert_name: str = ""
+    version: int = 1
+    supersedes: str | None = None
 
 
 class WorkMap(BaseModel):
@@ -72,6 +76,8 @@ class WorkMap(BaseModel):
     summary: str
     recorded_at: float = 0
     skills: list[Skill]
+    revision: int = 0
+    teach_back_confirmed: bool = False
 
 
 class Workflow(BaseModel):
@@ -97,18 +103,27 @@ class PracticeCase(BaseModel):
 
 # --- Capture ----------------------------------------------------------------
 class TranscriptTurn(BaseModel):
+    client_id: str | None = None
+    segment_id: int | None = None
+    question_id: str | None = None
+    answer_id: str | None = None
     t: float
     role: Literal["expert", "agent"]
     text: str
 
 
 class ScreenEvent(BaseModel):
+    event_id: int | None = None
+    client_event_id: str | None = None
     t: float
     kind: str
     description: str
     record_fields: dict = Field(default_factory=dict)
+    # Canonical browser facts remain distinct from model-extracted record fields.
+    observed_action: dict | None = None
     is_decision_point: bool = False
     ask_why: str | None = None
+    question_id: str | None = None
 
 
 class CaptureSession(BaseModel):
@@ -120,6 +135,8 @@ class CaptureSession(BaseModel):
     events: list[ScreenEvent] = Field(default_factory=list)
     last_screen_summary: str = ""
     workmap_id: str | None = None
+    phase: Literal["capture", "debrief", "finished"] = "capture"
+    workmap_revision: int = 0
 
 
 # --- Tutor ------------------------------------------------------------------
@@ -139,3 +156,5 @@ class TutorSession(BaseModel):
     matched_skill_ids: list[str]
     attempts: list[Attempt] = Field(default_factory=list)
     saved: bool = False
+    skill_snapshot: list[Skill] = Field(default_factory=list)
+    workflow_snapshot: Workflow | None = None

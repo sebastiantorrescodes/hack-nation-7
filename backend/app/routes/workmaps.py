@@ -35,12 +35,13 @@ async def update_workmap(workmap_id: str, wm: WorkMap) -> WorkMap:
 
 class StatusBody(BaseModel):
     status: Literal["draft", "approved", "rejected"]
+    expected_version: int
 
 
 @router.patch("/skills/{skill_id}")
 async def review_skill(skill_id: str, body: StatusBody) -> Skill:
     """Expert review: approving publishes the skill to trainees, rejecting removes it from the Work Map."""
-    sk = await store.set_skill_status(skill_id, body.status)
+    sk = await store.set_skill_status(skill_id, body.status, body.expected_version)
     if not sk:
         raise HTTPException(404, "skill not found")
     return sk

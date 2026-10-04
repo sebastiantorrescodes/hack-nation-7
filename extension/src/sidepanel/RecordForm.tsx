@@ -26,8 +26,10 @@ export function RecordForm({ fields, record, onChange }: { fields: RecordField[]
         if (f.type === "boolean") {
           return (
             <label key={f.name} className="check" title={f.description}>
-              <input type="checkbox" checked={v === true} onChange={(e) => set(f.name, e.target.checked)} />
               {label(f)}
+              <select value={v === true ? "true" : v === false ? "false" : "unknown"} onChange={e => set(f.name, e.target.value === "unknown" ? null : e.target.value === "true")}>
+                <option value="unknown">Unknown</option><option value="true">Yes</option><option value="false">No</option>
+              </select>
             </label>
           );
         }

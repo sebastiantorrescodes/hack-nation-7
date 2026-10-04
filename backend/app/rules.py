@@ -1,71 +1,90 @@
-"""Deterministic evaluation of skill triggers and guardrails against a record."""
+"""Deterministic rules: missing or malformed evidence is unknown, never permission to save."""
 
+import math
 from .models import Condition, Skill
 
 
-def _as_list(v) -> list[str]:
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return [str(x).strip().upper() for x in v]
-    return [str(v).strip().upper()]
+class UnknownRecord(ValueError):
+    def __init__(self, fields: list[str]):
+        self.fields = sorted(set(fields))
+        super().__init__('Cannot verify these fields: ' + ', '.join(self.fields))
 
 
-def _num(v) -> float | None:
+def _as_list(value) -> list[str]:
+    return [str(x).strip().upper() for x in value] if isinstance(value, list) else [str(value).strip().upper()]
+
+
+def _num(value) -> float | None:
     try:
-        return float(v)
+        result = float(value)
+        return result if not isinstance(value, bool) and math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
 
 
-def check(cond: Condition, record: dict) -> bool:
+def evaluate(cond: Condition, record: dict) -> bool | None:
     actual = record.get(cond.field)
+    if actual is None or isinstance(actual, dict): return None
     vals = [v.strip().upper() for v in cond.values]
-    actual_list = _as_list(actual)
+    values = _as_list(actual)
+    if cond.op in {'is_true','is_false'}:
+        if not isinstance(actual, bool): return None
+        return actual if cond.op=='is_true' else not actual
+    if cond.op in {'gt','lt'}:
+        a, b = _num(actual), _num(vals[0] if len(vals)==1 else None)
+        if a is None or b is None: return None
+        return a>b if cond.op=='gt' else a<b
+    if cond.op == 'empty': return not values or values==['']
+    if cond.op == 'not_empty': return bool(values) and values!=['']
+    if not vals: return None
+    if cond.op == 'eq': return values==[vals[0]]
+    if cond.op == 'neq': return values!=[vals[0]]
+    if cond.op == 'in': return any(v in vals for v in values)
+    if cond.op == 'not_in': return not any(v in vals for v in values)
+    if cond.op == 'contains': return all(v in values for v in vals)
+    if cond.op == 'not_contains': return not any(v in values for v in vals)
+    return None
 
-    match cond.op:
-        case "eq":
-            return bool(vals) and actual_list == [vals[0]]
-        case "neq":
-            return not vals or actual_list != [vals[0]]
-        case "in":
-            return any(a in vals for a in actual_list)
-        case "not_in":
-            return not any(a in vals for a in actual_list)
-        case "contains":
-            return all(v in actual_list for v in vals)
-        case "not_contains":
-            return not any(v in actual_list for v in vals)
-        case "gt" | "lt":
-            a, b = _num(actual), _num(vals[0] if vals else None)
-            if a is None or b is None:
-                return False
-            return a > b if cond.op == "gt" else a < b
-        case "is_true":
-            return actual is True
-        case "is_false":
-            return actual is False or actual is None
-        case "empty":
-            return not actual_list or actual_list == [""]
-        case "not_empty":
-            return bool(actual_list) and actual_list != [""]
-    return False
+
+def check(cond: Condition, record: dict) -> bool:
+    return evaluate(cond, record) is True
 
 
 def matches(conds: list[Condition], record: dict) -> bool:
-    return all(check(c, record) for c in conds)
+    if not conds: raise UnknownRecord(['skill_trigger'])
+    values = [evaluate(c, record) for c in conds]
+    if False in values: return False
+    if None in values: raise UnknownRecord([c.field for c, v in zip(conds, values) if v is None])
+    return True
 
 
 def triggered_skills(skills: list[Skill], record: dict) -> list[Skill]:
-    return [s for s in skills if matches(s.trigger, record)]
+    result, unknown = [], []
+    for skill in skills:
+        try:
+            if matches(skill.trigger, record): result.append(skill)
+        except UnknownRecord as exc:
+            unknown.extend(exc.fields)
+    if unknown: raise UnknownRecord(unknown)
+    return result
 
 
-def guardrail_violations(skills: list[Skill], original: dict, edited: dict) -> list[tuple[Skill, list[Condition]]]:
-    """Triggers are evaluated on the record as it arrived (before the learner touched it);
-    guardrails are evaluated on the record the learner is about to save."""
-    out = []
-    for s in triggered_skills(skills, original):
-        failed = [c for c in s.guardrail.must if not check(c, edited)]
-        if failed:
-            out.append((s, failed))
-    return out
+def guardrail_violations(skills: list[Skill], original: dict, edited: dict) -> list[tuple[Skill,list[Condition]]]:
+    result, unknown = [], []
+    for skill in triggered_skills(skills, original):
+        if not skill.guardrail.must: raise UnknownRecord(['skill_guardrail'])
+        values = [evaluate(c, edited) for c in skill.guardrail.must]
+        unknown.extend(c.field for c,v in zip(skill.guardrail.must, values) if v is None)
+        failed = [c for c,v in zip(skill.guardrail.must,values) if v is not True]
+        if failed: result.append((skill,failed))
+    if unknown: raise UnknownRecord(unknown)
+    return result
+
+
+def mastery_status(attempts, skill_id: str) -> str:
+    rows = [a for a in attempts if a.skill_id==skill_id]
+    prediction = next((a for a in rows if a.kind=='prediction'),None)
+    save = next((a for a in rows if a.kind=='save_check'),None)
+    if prediction and save and prediction.correct and save.correct and rows.index(prediction) < rows.index(save): return 'mastered'
+    if rows: return 'practicing'
+    return 'not_yet'
